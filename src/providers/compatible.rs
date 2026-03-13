@@ -452,18 +452,23 @@ struct ToolCall {
     id: Option<String>,
     #[serde(rename = "type")]
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     function: Option<Function>,
 
     // Compatibility: Some providers (e.g., older GLM) may use 'name' directly
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     arguments: Option<String>,
 
     // Compatibility: DeepSeek sometimes wraps arguments differently
     #[serde(rename = "parameters", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     parameters: Option<serde_json::Value>,
 }
 
