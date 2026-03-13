@@ -40,7 +40,7 @@ level = "supervised"
 workspace_only = true
 max_actions_per_hour = 20
 auto_approve = ["file_read", "memory_recall"]
-allowed_commands = ["git", "npm", "cargo", "ls", "cat", "grep", "find", "echo", "pwd"]
+allowed_commands = ["git", "npm", "cargo", "ls", "cat", "grep", "find", "echo", "pwd", "curl", "wget"]
 forbidden_paths = [
     "/etc", "/root", "/usr", "/bin", "/sbin", "/lib", "/opt",
     "/boot", "/dev", "/proc", "/sys", "/var", "/tmp",
