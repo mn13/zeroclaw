@@ -1,0 +1,52 @@
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.zcgw
+    ports:
+      - "8080:8080"
+    environment:
+      ZCGW_AUTH_TOKEN: "test-token-123"
+      ZCGW_GRPC_SECRET: "grpc-secret-456"
+      ZCGW_CONFIG_PATH: /etc/zcgw/config.toml
+    volumes:
+      - ./config/zcgw.toml:/etc/zcgw/config.toml:ro
+    depends_on:
+      - zc-1
+      - zc-2
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  zc-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.zc
+    volumes:
+      - zc-1-data:/data
+    environment:
+      ZC_GRPC_SECRET: "grpc-secret-456"
+      ZC_GRPC_PORT: "50051"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  zc-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.zc
+    volumes:
+      - zc-2-data:/data
+    environment:
+      ZC_GRPC_SECRET: "grpc-secret-456"
+      ZC_GRPC_PORT: "50051"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+volumes:
+  zc-1-data:
+  zc-2-data:

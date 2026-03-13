@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+
+# ── Builder ──────────────────────────────────────────────────────────
+FROM rust:1.87-slim AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN cargo build -p zcgw --profile ci && \
+    cp target/ci/zcgw /usr/local/bin/zcgw
+
+# ── Runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system zcgw && \
+    useradd --system --gid zcgw --create-home zcgw
+
+COPY --from=builder /usr/local/bin/zcgw /usr/local/bin/zcgw
+
+USER zcgw
+EXPOSE 8080
+STOPSIGNAL SIGTERM
+
+CMD ["zcgw"]

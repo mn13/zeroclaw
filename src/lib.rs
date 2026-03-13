@@ -64,6 +64,7 @@ pub mod providers;
 pub mod rag;
 pub mod runtime;
 pub(crate) mod security;
+pub mod serve;
 pub(crate) mod service;
 pub(crate) mod skills;
 pub mod tools;

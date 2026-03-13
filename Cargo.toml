@@ -17,7 +17,7 @@ rust-version = "1.87"
 
 [dependencies]
 # CLI - minimal and fast
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 
 # Async runtime - feature-optimized for size
@@ -97,8 +97,8 @@ async-trait = "0.1"
 # HMAC-SHA256 (Zhipu/GLM JWT auth)
 ring = "0.17"
 
-# Protobuf encode/decode (Lark WS frame codec, WhatsApp storage)
-prost = { version = "0.14", default-features = false, features = ["derive"], optional = true }
+# Protobuf encode/decode (gRPC + Lark WS frame codec + WhatsApp storage)
+prost = { version = "0.13", default-features = false, features = ["derive"] }
 
 # Memory / persistence
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -194,7 +194,7 @@ default = ["channel-nostr"]
 channel-nostr = ["dep:nostr-sdk"]
 hardware = ["nusb", "tokio-serial"]
 channel-matrix = ["dep:matrix-sdk"]
-channel-lark = ["dep:prost"]
+channel-lark = []  # prost now always available
 channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)
 memory-postgres = ["dep:postgres"]
 observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
@@ -213,7 +213,7 @@ probe = ["dep:probe-rs"]
 # rag-pdf = PDF ingestion for datasheet RAG
 rag-pdf = ["dep:pdf-extract"]
 # whatsapp-web = Native WhatsApp Web client with custom rusqlite storage backend
-whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode"]
+whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:qrcode"]
 
 [profile.release]
 opt-level = "z"      # Optimize for size

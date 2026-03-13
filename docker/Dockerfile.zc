@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+
+# ── Builder ──────────────────────────────────────────────────────────
+FROM rust:1.87-slim AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN cargo build --bin zc --profile ci && \
+    cp target/ci/zc /usr/local/bin/zc
+
+# ── Runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system zc && \
+    useradd --system --gid zc --create-home zc && \
+    mkdir -p /data && chown zc:zc /data
+
+COPY --from=builder /usr/local/bin/zc /usr/local/bin/zc
+
+USER zc
+EXPOSE 50051
+VOLUME ["/data"]
+STOPSIGNAL SIGTERM
+
+CMD ["zc", "serve", "--grpc-port", "50051", "--data-dir", "/data"]
