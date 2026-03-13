@@ -29,7 +29,6 @@ services:
     environment:
       ZC_GRPC_PORT: "50051"
       ZC_DATA_DIR: "/data"
-      ZC_CONFIG: "/etc/zc/config.toml"
       VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
@@ -48,7 +47,6 @@ services:
     environment:
       ZC_GRPC_PORT: "50051"
       ZC_DATA_DIR: "/data"
-      ZC_CONFIG: "/etc/zc/config.toml"
       VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"

@@ -22,13 +22,16 @@ RUN apt-get update && \
 
 RUN groupadd --system zc && \
     useradd --system --gid zc --create-home zc && \
-    mkdir -p /data && chown zc:zc /data
+    mkdir -p /data/.zeroclaw/workspace && chown -R zc:zc /data
 
 COPY --from=builder /usr/local/bin/zc /usr/local/bin/zc
+COPY docker/entrypoint-zc.sh /usr/local/bin/entrypoint-zc.sh
+RUN chmod +x /usr/local/bin/entrypoint-zc.sh
 
 USER zc
 EXPOSE 50051
 VOLUME ["/data"]
 STOPSIGNAL SIGTERM
 
+ENTRYPOINT ["entrypoint-zc.sh"]
 CMD ["zc", "--grpc-port", "50051", "--data-dir", "/data"]
