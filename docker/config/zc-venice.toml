@@ -1,0 +1,55 @@
+# ─────────────────────────────────────────────────────────────
+# ZeroClaw Instance Config — Venice Provider
+# ─────────────────────────────────────────────────────────────
+# Copy this file and adjust for each instance.
+# API key is passed via VENICE_API_KEY env var (see docker-compose.yml).
+
+# ── Provider ────────────────────────────────────────────────
+default_provider = "venice"
+default_model = "deepseek/deepseek-chat-v3-0324"
+default_temperature = 0.7
+provider_timeout_secs = 120
+
+# Model routing: direct task hints to specific models.
+# The agent can use hint:fast, hint:reasoning, etc.
+# If no hint matches, default_model is used.
+model_routes = [
+    { hint = "fast",      provider = "venice", model = "qwen/qwen3-235b-a22b" },
+    { hint = "reasoning", provider = "venice", model = "deepseek/deepseek-r1" },
+    { hint = "code",      provider = "venice", model = "deepseek/deepseek-chat-v3-0324" },
+    { hint = "creative",  provider = "venice", model = "anthropic/claude-sonnet-4" },
+]
+
+# ── Memory ──────────────────────────────────────────────────
+[memory]
+backend = "sqlite"
+auto_save = true
+auto_hydrate = true
+min_relevance_score = 0.4
+embedding_provider = "none"  # set to "venice" + embedding model if you want vector search
+
+# ── Agent Behavior ──────────────────────────────────────────
+[agent]
+compact_context = false
+max_tool_iterations = 10
+max_history_messages = 50
+
+# ── Autonomy ────────────────────────────────────────────────
+[autonomy]
+level = "supervised"
+workspace_only = true
+max_actions_per_hour = 20
+auto_approve = ["file_read", "memory_recall"]
+allowed_commands = ["git", "npm", "cargo", "ls", "cat", "grep", "find", "echo", "pwd"]
+
+# ── Cron ────────────────────────────────────────────────────
+[cron]
+enabled = true
+max_run_history = 50
+
+# ── Security ────────────────────────────────────────────────
+[secrets]
+encrypt = true
+
+[security.sandbox]
+backend = "auto"

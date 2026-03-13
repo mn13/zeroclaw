@@ -6,8 +6,8 @@ services:
     ports:
       - "8080:8080"
     environment:
-      ZCGW_AUTH_TOKEN: "test-token-123"
-      ZCGW_GRPC_SECRET: "grpc-secret-456"
+      ZCGW_AUTH_TOKEN: "${ZCGW_AUTH_TOKEN:-test-token-123}"
+      ZCGW_GRPC_SECRET: "${ZCGW_GRPC_SECRET:-grpc-secret-456}"
       ZCGW_CONFIG_PATH: /etc/zcgw/config.toml
     volumes:
       - ./config/zcgw.toml:/etc/zcgw/config.toml:ro
@@ -25,9 +25,12 @@ services:
       dockerfile: docker/Dockerfile.zc
     volumes:
       - zc-1-data:/data
+      - ./config/zc-venice.toml:/etc/zc/config.toml:ro
     environment:
       ZC_GRPC_PORT: "50051"
       ZC_DATA_DIR: "/data"
+      ZC_CONFIG: "/etc/zc/config.toml"
+      VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     deploy:
@@ -41,9 +44,12 @@ services:
       dockerfile: docker/Dockerfile.zc
     volumes:
       - zc-2-data:/data
+      - ./config/zc-venice.toml:/etc/zc/config.toml:ro
     environment:
       ZC_GRPC_PORT: "50051"
       ZC_DATA_DIR: "/data"
+      ZC_CONFIG: "/etc/zc/config.toml"
+      VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     deploy:

@@ -35,6 +35,14 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // If a config path is provided, point ZEROCLAW_CONFIG_DIR at its parent
+    // so that Config::load_or_init() picks it up.
+    if let Some(ref config_path) = cli.config {
+        if let Some(parent) = config_path.parent() {
+            std::env::set_var("ZEROCLAW_CONFIG_DIR", parent);
+        }
+    }
+
     // Load config.
     let config = Config::load_or_init()
         .await
