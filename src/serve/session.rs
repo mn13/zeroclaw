@@ -1,7 +1,9 @@
 use crate::config::Config;
 use crate::serve::history_store::{HistoryRow, HistoryStore};
 use anyhow::{Context, Result};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -45,6 +47,11 @@ pub struct AgentBroadcastEvent {
     pub timestamp: String,
 }
 
+/// Type alias for the async message handler function.
+pub type MessageHandler = Box<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> + Send + Sync,
+>;
+
 /// Manages a single agent session: owns the history store, coordinates the
 /// agent actor task, and tracks state.
 pub struct SessionManager {
@@ -61,6 +68,22 @@ pub struct SessionManager {
 impl SessionManager {
     /// Create a new session manager. Spawns the agent actor task.
     pub fn new(config: Config, data_dir: PathBuf) -> Result<Arc<Self>> {
+        let handler: MessageHandler = {
+            let cfg = config.clone();
+            Box::new(move |enriched_message: String| {
+                let c = cfg.clone();
+                Box::pin(async move { crate::agent::process_message(c, &enriched_message).await })
+            })
+        };
+        Self::new_with_handler(config, data_dir, handler)
+    }
+
+    /// Create a session manager with a custom message handler (for testing).
+    pub fn new_with_handler(
+        config: Config,
+        data_dir: PathBuf,
+        handler: MessageHandler,
+    ) -> Result<Arc<Self>> {
         let db_path = data_dir.join("history.db");
         let history =
             Arc::new(HistoryStore::open(&db_path).context("failed to open history store")?);
@@ -68,13 +91,11 @@ impl SessionManager {
         let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>(64);
         let (event_tx, _event_rx) = broadcast::channel::<AgentBroadcastEvent>(256);
 
-        let actor_config = config.clone();
         let actor_history = history.clone();
         let actor_event_tx = event_tx.clone();
 
-        // The actor handle holds a reference we keep alive.
         let handle = tokio::spawn(async move {
-            agent_actor_loop(actor_config, actor_history, cmd_rx, actor_event_tx).await;
+            agent_actor_loop(handler, actor_history, cmd_rx, actor_event_tx).await;
         });
 
         // Recover turn counter from existing history.
@@ -110,9 +131,8 @@ impl SessionManager {
 }
 
 /// The actor loop: sequentially processes agent commands.
-/// Each `SendMessage` calls `process_message`, stores results in history.
 async fn agent_actor_loop(
-    config: Config,
+    handler: MessageHandler,
     history: Arc<HistoryStore>,
     mut rx: mpsc::Receiver<AgentCommand>,
     event_tx: broadcast::Sender<AgentBroadcastEvent>,
@@ -145,9 +165,8 @@ async fn agent_actor_loop(
                     format!("{context_prefix}\n\nCurrent message: {message}")
                 };
 
-                // Call process_message (creates a fresh agent per call).
-                let result =
-                    crate::agent::process_message(config.clone(), &enriched_message).await;
+                // Call the message handler.
+                let result = handler(enriched_message).await;
 
                 match result {
                     Ok(response) => {
@@ -172,14 +191,16 @@ async fn agent_actor_loop(
                     }
                     Err(e) => {
                         let error_msg = format!("{e:#}");
-                        // Still save the user message so we don't lose it.
                         let _ = history.append(turn_index, "user", &message);
                         let _ = history.append(turn_index, "assistant", &format!("[error] {e}"));
 
                         let _ = reply.send(AgentResponse::Error(error_msg.clone())).await;
                         let _ = event_tx.send(AgentBroadcastEvent {
                             event_type: "turn_error".into(),
-                            data_json: format!(r#"{{"turn_index":{turn_index},"error":{}}}"#, serde_json::json!(error_msg)),
+                            data_json: format!(
+                                r#"{{"turn_index":{turn_index},"error":{}}}"#,
+                                serde_json::json!(error_msg)
+                            ),
                             timestamp: chrono::Utc::now().to_rfc3339(),
                         });
                     }

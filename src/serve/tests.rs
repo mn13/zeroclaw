@@ -193,3 +193,238 @@ fn history_store_persistent_file() {
         assert_eq!(recent[1].content, "Hello Daniel!");
     }
 }
+
+// ── gRPC integration tests ──────────────────────────────────────────
+
+/// Full round-trip test: start a gRPC server with a mock handler, send two
+/// messages via a gRPC client, and verify the second message's context
+/// contains information from the first. This is the acceptance test.
+#[tokio::test]
+async fn grpc_roundtrip_memory_persistence() {
+    use crate::config::Config;
+    use crate::serve::grpc_server::ClawAgentService;
+    use crate::serve::proto::claw_agent_client::ClawAgentClient;
+    use crate::serve::proto::claw_agent_server::ClawAgentServer;
+    use crate::serve::session::{MessageHandler, SessionManager};
+    use std::sync::Mutex;
+
+    // Capture the enriched messages sent to the handler.
+    let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_clone = captured.clone();
+
+    // Mock handler: echoes back a static response but captures the enriched message.
+    let handler: MessageHandler = Box::new(move |enriched: String| {
+        let cap = captured_clone.clone();
+        Box::pin(async move {
+            cap.lock().unwrap().push(enriched);
+            Ok("Nice to meet you, Daniel!".to_string())
+        })
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::default();
+    let session = SessionManager::new_with_handler(config.clone(), dir.path().to_path_buf(), handler)
+        .expect("create session");
+
+    // Start gRPC server on a random port.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let service = ClawAgentService::new(session);
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        tonic::transport::Server::builder()
+            .add_service(ClawAgentServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    // Give server a moment to start.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Connect gRPC client.
+    let mut client = ClawAgentClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect to gRPC server");
+
+    // ── Turn 1: user says their name ──
+    let req1 = crate::serve::proto::SendMessageRequest {
+        message: "My name is Daniel".into(),
+    };
+    let mut stream1 = client
+        .send_message(tonic::Request::new(req1))
+        .await
+        .expect("send message 1")
+        .into_inner();
+
+    // Drain the stream to completion.
+    let mut got_done_1 = false;
+    while let Some(msg) = stream1.message().await.unwrap() {
+        if let Some(crate::serve::proto::chat_output::Output::Done(done)) = msg.output {
+            assert_eq!(done.content, "Nice to meet you, Daniel!");
+            got_done_1 = true;
+        }
+    }
+    assert!(got_done_1, "must receive Done for turn 1");
+
+    // ── Turn 2: ask about the name ──
+    let req2 = crate::serve::proto::SendMessageRequest {
+        message: "What is my name?".into(),
+    };
+    let mut stream2 = client
+        .send_message(tonic::Request::new(req2))
+        .await
+        .expect("send message 2")
+        .into_inner();
+
+    // Drain the stream.
+    while let Some(_msg) = stream2.message().await.unwrap() {}
+
+    // ── Verify: the second enriched message contains the first turn's content ──
+    let messages = captured.lock().unwrap();
+    assert_eq!(messages.len(), 2, "handler should have been called twice");
+
+    // First message: no history context (fresh conversation).
+    assert!(
+        !messages[0].contains("[Previous conversation context]"),
+        "first message should have no history prefix"
+    );
+    assert!(
+        messages[0].contains("My name is Daniel"),
+        "first enriched message should contain the original text"
+    );
+
+    // Second message: MUST contain history from first turn.
+    assert!(
+        messages[1].contains("[Previous conversation context]"),
+        "second message should have history prefix"
+    );
+    assert!(
+        messages[1].contains("My name is Daniel"),
+        "second enriched message must contain 'My name is Daniel' from turn 1"
+    );
+    assert!(
+        messages[1].contains("Nice to meet you, Daniel!"),
+        "second enriched message must contain assistant response from turn 1"
+    );
+    assert!(
+        messages[1].contains("What is my name?"),
+        "second enriched message must contain the current question"
+    );
+}
+
+#[tokio::test]
+async fn grpc_health_check() {
+    use crate::config::Config;
+    use crate::serve::grpc_server::ClawAgentService;
+    use crate::serve::proto::claw_agent_client::ClawAgentClient;
+    use crate::serve::proto::claw_agent_server::ClawAgentServer;
+    use crate::serve::session::{MessageHandler, SessionManager};
+
+    let handler: MessageHandler = Box::new(|_| Box::pin(async { Ok("ok".into()) }));
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::default();
+    let session =
+        SessionManager::new_with_handler(config, dir.path().to_path_buf(), handler).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let service = ClawAgentService::new(session);
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        tonic::transport::Server::builder()
+            .add_service(ClawAgentServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut client = ClawAgentClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let resp = client
+        .health_check(tonic::Request::new(crate::serve::proto::HealthCheckRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(resp.healthy);
+    assert!(!resp.version.is_empty());
+}
+
+#[tokio::test]
+async fn grpc_history_persists_across_turns() {
+    use crate::config::Config;
+    use crate::serve::grpc_server::ClawAgentService;
+    use crate::serve::proto::claw_agent_client::ClawAgentClient;
+    use crate::serve::proto::claw_agent_server::ClawAgentServer;
+    use crate::serve::session::{MessageHandler, SessionManager};
+
+    let handler: MessageHandler =
+        Box::new(|_| Box::pin(async { Ok("acknowledged".into()) }));
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::default();
+    let session =
+        SessionManager::new_with_handler(config, dir.path().to_path_buf(), handler).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let service = ClawAgentService::new(session);
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        tonic::transport::Server::builder()
+            .add_service(ClawAgentServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut client = ClawAgentClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    // Send 3 messages.
+    for msg_text in &["hello", "world", "test"] {
+        let req = crate::serve::proto::SendMessageRequest {
+            message: msg_text.to_string(),
+        };
+        let mut stream = client
+            .send_message(tonic::Request::new(req))
+            .await
+            .unwrap()
+            .into_inner();
+        while let Some(_) = stream.message().await.unwrap() {}
+    }
+
+    // Query history.
+    let hist = client
+        .get_history(tonic::Request::new(crate::serve::proto::HistoryRequest {
+            offset: 0,
+            limit: 100,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3 turns × 2 entries (user + assistant) = 6 total.
+    assert_eq!(hist.total, 6);
+    assert_eq!(hist.messages.len(), 6);
+
+    // Verify ordering and content.
+    assert_eq!(hist.messages[0].role, "user");
+    assert_eq!(hist.messages[0].content, "hello");
+    assert_eq!(hist.messages[1].role, "assistant");
+    assert_eq!(hist.messages[1].content, "acknowledged");
+    assert_eq!(hist.messages[2].role, "user");
+    assert_eq!(hist.messages[2].content, "world");
+}
+
+use std::sync::Arc;
