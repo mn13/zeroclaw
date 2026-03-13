@@ -1,5 +1,4 @@
 /target
-firmware/*/target
 web/dist/
 *.db
 *.db-journal
@@ -13,14 +12,12 @@ docker-compose.override.yml
 # Environment files (may contain secrets)
 .env
 
-# Python virtual environments
+# IDE
+.vscode/
+.gemini/
 
-.venv/
-venv/
-
-# ESP32 build cache (esp-idf-sys managed)
-
-.embuild/
+# Docker local state
+.zeroclaw-docker/
 .env.local
 .env.*.local
 
