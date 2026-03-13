@@ -195,7 +195,7 @@ async fn agent_actor_loop(
 }
 
 /// Build a context prefix from recent history rows so the agent has continuity.
-fn build_context_prefix(rows: &[HistoryRow]) -> String {
+pub(crate) fn build_context_prefix(rows: &[HistoryRow]) -> String {
     if rows.is_empty() {
         return String::new();
     }

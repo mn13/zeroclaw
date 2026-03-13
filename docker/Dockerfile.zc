@@ -31,4 +31,4 @@ EXPOSE 50051
 VOLUME ["/data"]
 STOPSIGNAL SIGTERM
 
-CMD ["zc", "serve", "--grpc-port", "50051", "--data-dir", "/data"]
+CMD ["zc", "--grpc-port", "50051", "--data-dir", "/data"]

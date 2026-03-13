@@ -26,8 +26,10 @@ services:
     volumes:
       - zc-1-data:/data
     environment:
-      ZC_GRPC_SECRET: "grpc-secret-456"
       ZC_GRPC_PORT: "50051"
+      ZC_DATA_DIR: "/data"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     deploy:
       resources:
         limits:
@@ -40,8 +42,10 @@ services:
     volumes:
       - zc-2-data:/data
     environment:
-      ZC_GRPC_SECRET: "grpc-secret-456"
       ZC_GRPC_PORT: "50051"
+      ZC_DATA_DIR: "/data"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     deploy:
       resources:
         limits:
