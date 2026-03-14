@@ -217,7 +217,7 @@ async fn grpc_roundtrip_memory_persistence() {
         let cap = captured_clone.clone();
         Box::pin(async move {
             cap.lock().unwrap().push(enriched);
-            Ok("Nice to meet you, Daniel!".to_string())
+            Ok(("Nice to meet you, Daniel!".to_string(), 100, 50))
         })
     });
 
@@ -322,7 +322,7 @@ async fn grpc_health_check() {
     use crate::serve::proto::claw_agent_server::ClawAgentServer;
     use crate::serve::session::{MessageHandler, SessionManager};
 
-    let handler: MessageHandler = Box::new(|_| Box::pin(async { Ok("ok".into()) }));
+    let handler: MessageHandler = Box::new(|_| Box::pin(async { Ok(("ok".to_string(), 0, 0)) }));
     let dir = tempfile::tempdir().unwrap();
     let config = Config::default();
     let session =
@@ -366,7 +366,7 @@ async fn grpc_history_persists_across_turns() {
     use crate::serve::session::{MessageHandler, SessionManager};
 
     let handler: MessageHandler =
-        Box::new(|_| Box::pin(async { Ok("acknowledged".into()) }));
+        Box::new(|_| Box::pin(async { Ok(("acknowledged".to_string(), 0, 0)) }));
     let dir = tempfile::tempdir().unwrap();
     let config = Config::default();
     let session =

@@ -6,18 +6,19 @@ use axum::{
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "web-ui/"]
+#[folder = "../web/dist/"]
 struct WebUi;
 
 pub async fn static_handler(req: Request) -> impl IntoResponse {
     let path = req.uri().path();
 
-    // Strip /_app/ prefix for asset requests
-    let file_path = if let Some(stripped) = path.strip_prefix("/_app/") {
-        stripped.to_string()
-    } else {
-        // SPA fallback
+    // Strip leading slash and try to serve the file directly.
+    // Handles /assets/*, /_app/*, and any other static file paths.
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
+    let file_path = if trimmed.is_empty() {
         "index.html".to_string()
+    } else {
+        trimmed.to_string()
     };
 
     serve_file(&file_path)

@@ -1,341 +1,466 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from "react";
 import {
-  Brain,
-  Search,
-  Plus,
-  Trash2,
-  X,
-  Filter,
-} from 'lucide-react';
-import type { MemoryEntry } from '@/types/api';
-import { getMemory, storeMemory, deleteMemory } from '@/lib/api';
+  listMemory,
+  searchMemory,
+  storeMemory,
+  forgetMemory,
+} from "../api";
+import type { MemoryEntry } from "../api";
+import { clipCorner } from "../theme";
 
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max) + '...';
+interface Props {
+  instanceId: string;
+  toast: (msg: string, isError?: boolean) => void;
 }
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString();
-}
-
-export default function Memory() {
+export default function Memory({ instanceId, toast }: Props) {
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [showForm, setShowForm] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [selected, setSelected] = useState<MemoryEntry | null>(null);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [showStore, setShowStore] = useState(false);
 
-  // Form state
-  const [formKey, setFormKey] = useState('');
-  const [formContent, setFormContent] = useState('');
-  const [formCategory, setFormCategory] = useState('');
-  const [formError, setFormError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  // Store form
+  const [formKey, setFormKey] = useState("");
+  const [formCategory, setFormCategory] = useState("");
+  const [formContent, setFormContent] = useState("");
 
-  const fetchEntries = (q?: string, cat?: string) => {
+  const fetchAll = useCallback(() => {
     setLoading(true);
-    getMemory(q || undefined, cat || undefined)
-      .then(setEntries)
-      .catch((err) => setError(err.message))
+    listMemory(instanceId)
+      .then((res) => {
+        setEntries(res.entries);
+        setSelected(null);
+      })
+      .catch((err) => toast(err.message, true))
       .finally(() => setLoading(false));
-  };
+  }, [instanceId, toast]);
 
   useEffect(() => {
-    fetchEntries();
-  }, []);
+    fetchAll();
+  }, [fetchAll]);
 
-  const handleSearch = () => {
-    fetchEntries(search, categoryFilter);
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleSearch();
-  };
-
-  const categories = Array.from(new Set(entries.map((e) => e.category))).sort();
-
-  const handleAdd = async () => {
-    if (!formKey.trim() || !formContent.trim()) {
-      setFormError('Key and content are required.');
+  const handleSearch = useCallback(() => {
+    if (!query.trim()) {
+      fetchAll();
       return;
     }
-    setSubmitting(true);
-    setFormError(null);
+    setLoading(true);
+    searchMemory(instanceId, query.trim())
+      .then((res) => {
+        setEntries(res.entries);
+        setSelected(null);
+      })
+      .catch((err) => toast(err.message, true))
+      .finally(() => setLoading(false));
+  }, [instanceId, query, fetchAll, toast]);
+
+  const handleStore = useCallback(async () => {
+    if (!formKey.trim() || !formContent.trim()) {
+      toast("Key and content are required", true);
+      return;
+    }
     try {
       await storeMemory(
+        instanceId,
         formKey.trim(),
         formContent.trim(),
-        formCategory.trim() || undefined,
+        formCategory.trim() || "general",
       );
-      fetchEntries(search, categoryFilter);
-      setShowForm(false);
-      setFormKey('');
-      setFormContent('');
-      setFormCategory('');
+      toast("Memory stored");
+      setShowStore(false);
+      setFormKey("");
+      setFormCategory("");
+      setFormContent("");
+      fetchAll();
     } catch (err: unknown) {
-      setFormError(err instanceof Error ? err.message : 'Failed to store memory');
-    } finally {
-      setSubmitting(false);
+      toast(err instanceof Error ? err.message : "Store failed", true);
     }
+  }, [instanceId, formKey, formContent, formCategory, fetchAll, toast]);
+
+  const handleDelete = useCallback(
+    async (key: string) => {
+      try {
+        await forgetMemory(instanceId, key);
+        toast("Memory deleted");
+        setSelected(null);
+        fetchAll();
+      } catch (err: unknown) {
+        toast(err instanceof Error ? err.message : "Delete failed", true);
+      }
+    },
+    [instanceId, fetchAll, toast],
+  );
+
+  const handleCopy = useCallback(
+    (content: string) => {
+      navigator.clipboard.writeText(content).then(
+        () => toast("Copied to clipboard"),
+        () => toast("Copy failed", true),
+      );
+    },
+    [toast],
+  );
+
+  const inputStyle: React.CSSProperties = {
+    fontFamily: "JetBrains Mono, monospace",
+    fontSize: 13,
+    background: "var(--bg-input)",
+    border: "1px solid var(--border)",
+    color: "var(--text-primary)",
+    padding: "6px 10px",
+    clipPath: clipCorner(6),
+    outline: "none",
+    flex: 1,
   };
 
-  const handleDelete = async (key: string) => {
-    try {
-      await deleteMemory(key);
-      setEntries((prev) => prev.filter((e) => e.key !== key));
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete memory');
-    } finally {
-      setConfirmDelete(null);
-    }
+  const btnSecondary: React.CSSProperties = {
+    fontFamily: "JetBrains Mono, monospace",
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    padding: "7px 16px",
+    background: "transparent",
+    border: "1px solid var(--border)",
+    color: "var(--text-primary)",
+    cursor: "pointer",
+    clipPath: clipCorner(6),
   };
 
-  if (error && entries.length === 0) {
-    return (
-      <div className="p-6">
-        <div className="rounded-lg bg-red-900/30 border border-red-700 p-4 text-red-300">
-          Failed to load memory: {error}
-        </div>
-      </div>
-    );
-  }
+  const btnPrimary: React.CSSProperties = {
+    ...btnSecondary,
+    background: "var(--amber)",
+    border: "1px solid var(--amber)",
+    color: "#000",
+  };
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Brain className="h-5 w-5 text-blue-400" />
-          <h2 className="text-base font-semibold text-white">
-            Memory ({entries.length})
-          </h2>
-        </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+    <div style={{ padding: 24, maxWidth: 1000, flex: 1, overflowY: "auto" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 20 }}>
+        <h2
+          style={{
+            fontFamily: "Syne, sans-serif",
+            fontSize: 18,
+            fontWeight: 700,
+            color: "var(--amber)",
+            textTransform: "uppercase",
+            letterSpacing: 1,
+          }}
         >
-          <Plus className="h-4 w-4" />
-          Add Memory
-        </button>
+          Memory
+        </h2>
+        <span
+          style={{
+            fontFamily: "JetBrains Mono, monospace",
+            fontSize: 11,
+            color: "var(--text-dim)",
+          }}
+        >
+          {entries.length} {entries.length === 1 ? "entry" : "entries"}
+        </span>
       </div>
 
-      {/* Search and Filter */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Search memory entries..."
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div className="relative">
-          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-8 py-2.5 text-sm text-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-          >
-            <option value="">All Categories</option>
-            {categories.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button
-          onClick={handleSearch}
-          className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
-        >
+      {/* Toolbar */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        <input
+          type="text"
+          placeholder="Search memory..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+          style={inputStyle}
+        />
+        <button onClick={handleSearch} style={btnSecondary}>
           Search
         </button>
+        <button onClick={fetchAll} style={btnSecondary}>
+          List All
+        </button>
+        <button
+          onClick={() => setShowStore(!showStore)}
+          style={btnPrimary}
+        >
+          + Store
+        </button>
       </div>
 
-      {/* Error banner (non-fatal) */}
-      {error && (
-        <div className="rounded-lg bg-red-900/30 border border-red-700 p-3 text-sm text-red-300">
-          {error}
-        </div>
-      )}
-
-      {/* Add Memory Form Modal */}
-      {showForm && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md mx-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-white">Add Memory</h3>
-              <button
-                onClick={() => {
-                  setShowForm(false);
-                  setFormError(null);
-                }}
-                className="text-gray-400 hover:text-white transition-colors"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {formError && (
-              <div className="mb-4 rounded-lg bg-red-900/30 border border-red-700 p-3 text-sm text-red-300">
-                {formError}
-              </div>
-            )}
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Key <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formKey}
-                  onChange={(e) => setFormKey(e.target.value)}
-                  placeholder="e.g. user_preferences"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Content <span className="text-red-400">*</span>
-                </label>
-                <textarea
-                  value={formContent}
-                  onChange={(e) => setFormContent(e.target.value)}
-                  placeholder="Memory content..."
-                  rows={4}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Category (optional)
-                </label>
-                <input
-                  type="text"
-                  value={formCategory}
-                  onChange={(e) => setFormCategory(e.target.value)}
-                  placeholder="e.g. preferences, context, facts"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6">
-              <button
-                onClick={() => {
-                  setShowForm(false);
-                  setFormError(null);
-                }}
-                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white border border-gray-700 rounded-lg hover:bg-gray-800 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAdd}
-                disabled={submitting}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50"
-              >
-                {submitting ? 'Saving...' : 'Save'}
-              </button>
-            </div>
+      {/* Store form */}
+      {showStore && (
+        <div
+          style={{
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            clipPath: clipCorner(10),
+            padding: 16,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <input
+              type="text"
+              placeholder="Key"
+              value={formKey}
+              onChange={(e) => setFormKey(e.target.value)}
+              style={inputStyle}
+            />
+            <input
+              type="text"
+              placeholder="Category"
+              value={formCategory}
+              onChange={(e) => setFormCategory(e.target.value)}
+              style={{ ...inputStyle, maxWidth: 200 }}
+            />
+          </div>
+          <textarea
+            placeholder="Content..."
+            value={formContent}
+            onChange={(e) => setFormContent(e.target.value)}
+            rows={4}
+            style={{
+              ...inputStyle,
+              width: "100%",
+              resize: "vertical",
+              marginBottom: 8,
+              flex: "unset",
+            }}
+          />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button
+              onClick={() => {
+                setShowStore(false);
+                setFormKey("");
+                setFormCategory("");
+                setFormContent("");
+              }}
+              style={btnSecondary}
+            >
+              Cancel
+            </button>
+            <button onClick={handleStore} style={btnPrimary}>
+              Store
+            </button>
           </div>
         </div>
       )}
 
-      {/* Memory Table */}
-      {loading ? (
-        <div className="flex items-center justify-center h-32">
-          <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
-        </div>
-      ) : entries.length === 0 ? (
-        <div className="bg-gray-900 rounded-xl border border-gray-800 p-8 text-center">
-          <Brain className="h-10 w-10 text-gray-600 mx-auto mb-3" />
-          <p className="text-gray-400">No memory entries found.</p>
-        </div>
-      ) : (
-        <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-800">
-                <th className="text-left px-4 py-3 text-gray-400 font-medium">
-                  Key
-                </th>
-                <th className="text-left px-4 py-3 text-gray-400 font-medium">
-                  Content
-                </th>
-                <th className="text-left px-4 py-3 text-gray-400 font-medium">
-                  Category
-                </th>
-                <th className="text-left px-4 py-3 text-gray-400 font-medium">
-                  Timestamp
-                </th>
-                <th className="text-right px-4 py-3 text-gray-400 font-medium">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry) => (
-                <tr
-                  key={entry.id}
-                  className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors"
-                >
-                  <td className="px-4 py-3 text-white font-medium font-mono text-xs">
-                    {entry.key}
-                  </td>
-                  <td className="px-4 py-3 text-gray-300 max-w-[300px]">
-                    <span title={entry.content}>
-                      {truncate(entry.content, 80)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-300 capitalize">
-                      {entry.category}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
-                    {formatDate(entry.timestamp)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {confirmDelete === entry.key ? (
-                      <div className="flex items-center justify-end gap-2">
-                        <span className="text-xs text-red-400">Delete?</span>
-                        <button
-                          onClick={() => handleDelete(entry.key)}
-                          className="text-red-400 hover:text-red-300 text-xs font-medium"
-                        >
-                          Yes
-                        </button>
-                        <button
-                          onClick={() => setConfirmDelete(null)}
-                          className="text-gray-400 hover:text-white text-xs font-medium"
-                        >
-                          No
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setConfirmDelete(entry.key)}
-                        className="text-gray-400 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {loading && (
+        <div
+          style={{
+            color: "var(--text-dim)",
+            fontFamily: "Outfit, sans-serif",
+            fontSize: 14,
+            padding: 16,
+          }}
+        >
+          Loading...
         </div>
       )}
+
+      {/* Memory list + detail */}
+      <div style={{ display: "flex", gap: 16 }}>
+        {/* List */}
+        <div
+          style={{
+            flex: 1,
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            clipPath: clipCorner(10),
+            overflow: "hidden",
+          }}
+        >
+          {entries.length === 0 && !loading && (
+            <div
+              style={{
+                padding: 32,
+                textAlign: "center",
+                color: "var(--text-dim)",
+                fontFamily: "Outfit, sans-serif",
+                fontSize: 13,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 28,
+                  fontFamily: "JetBrains Mono, monospace",
+                  marginBottom: 8,
+                  opacity: 0.4,
+                }}
+              >
+                {"◇"}
+              </div>
+              No memory entries found
+              <div style={{ fontSize: 11, marginTop: 4, color: "var(--text-dim)" }}>
+                Use "+ Store" to add entries or chat with the agent to build memory
+              </div>
+            </div>
+          )}
+          {entries.map((entry) => {
+            const isSelected = selected?.key === entry.key;
+            return (
+              <div
+                key={entry.key}
+                onClick={() => setSelected(isSelected ? null : entry)}
+                style={{
+                  padding: "10px 14px",
+                  borderBottom: "1px solid var(--border)",
+                  cursor: "pointer",
+                  borderLeft: isSelected
+                    ? "3px solid var(--amber)"
+                    : "3px solid transparent",
+                  background: isSelected
+                    ? "var(--amber-glow)"
+                    : "transparent",
+                  transition: "background 0.15s",
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--amber-bright)",
+                    marginBottom: 2,
+                  }}
+                >
+                  {entry.key}
+                </div>
+                <div
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 10,
+                    textTransform: "uppercase",
+                    color: "var(--text-dim)",
+                    marginBottom: 4,
+                  }}
+                >
+                  {entry.category}
+                </div>
+                <div
+                  style={{
+                    fontFamily: "Outfit, sans-serif",
+                    fontSize: 12,
+                    color: "var(--text-dim)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {entry.content}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Detail panel */}
+        {selected && (
+          <div
+            style={{
+              width: 360,
+              flexShrink: 0,
+              border: "1px solid var(--border-amber)",
+              clipPath: clipCorner(10),
+              padding: 16,
+              background: "var(--bg-card)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 12,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "JetBrains Mono, monospace",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: "var(--amber-bright)",
+                }}
+              >
+                {selected.key}
+              </span>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={() => handleCopy(selected.content)}
+                  style={{
+                    ...btnSecondary,
+                    padding: "4px 10px",
+                    fontSize: 10,
+                  }}
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => handleDelete(selected.key)}
+                  style={{
+                    ...btnSecondary,
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    borderColor: "var(--error-text)",
+                    color: "var(--error-text)",
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+
+            <div
+              style={{
+                background: "var(--bg-input)",
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 12,
+                color: "var(--text-primary)",
+                padding: 12,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                maxHeight: 300,
+                overflowY: "auto",
+                clipPath: clipCorner(6),
+                marginBottom: 12,
+              }}
+            >
+              {selected.content}
+            </div>
+
+            <div
+              style={{
+                fontFamily: "Outfit, sans-serif",
+                fontSize: 12,
+                color: "var(--text-dim)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <span>
+                Category:{" "}
+                <span style={{ color: "var(--text-primary)" }}>
+                  {selected.category}
+                </span>
+              </span>
+              <span>
+                Timestamp:{" "}
+                <span style={{ color: "var(--text-primary)" }}>
+                  {selected.timestamp}
+                </span>
+              </span>
+              {selected.score != null && (
+                <span>
+                  Score:{" "}
+                  <span style={{ color: "var(--amber)" }}>
+                    {selected.score.toFixed(4)}
+                  </span>
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -1897,7 +1897,7 @@ async fn process_channel_message(
     let history_len_before_tools = history.len();
 
     enum LlmExecutionResult {
-        Completed(Result<Result<String, anyhow::Error>, tokio::time::error::Elapsed>),
+        Completed(Result<Result<(String, u64, u64), anyhow::Error>, tokio::time::error::Elapsed>),
         Cancelled,
     }
 
@@ -1988,7 +1988,7 @@ async fn process_channel_message(
                 }
             }
         }
-        LlmExecutionResult::Completed(Ok(Ok(response))) => {
+        LlmExecutionResult::Completed(Ok(Ok((response, _, _)))) => {
             // ── Hook: on_message_sending (modifying) ─────────
             let mut outbound_response = response;
             if let Some(hooks) = &ctx.hooks {

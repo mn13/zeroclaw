@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 
 /// A command sent to the agent actor task.
 pub enum AgentCommand {
@@ -27,6 +27,8 @@ pub enum AgentResponse {
     Done {
         content: String,
         turn_index: u64,
+        input_tokens: u64,
+        output_tokens: u64,
     },
     /// An error during the turn.
     Error(String),
@@ -49,13 +51,13 @@ pub struct AgentBroadcastEvent {
 
 /// Type alias for the async message handler function.
 pub type MessageHandler = Box<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> + Send + Sync,
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(String, u64, u64)>> + Send>> + Send + Sync,
 >;
 
 /// Manages a single agent session: owns the history store, coordinates the
 /// agent actor task, and tracks state.
 pub struct SessionManager {
-    pub config: Config,
+    pub config: Arc<RwLock<Config>>,
     pub history: Arc<HistoryStore>,
     pub turn_counter: AtomicU64,
     pub busy: AtomicBool,
@@ -68,19 +70,32 @@ pub struct SessionManager {
 impl SessionManager {
     /// Create a new session manager. Spawns the agent actor task.
     pub fn new(config: Config, data_dir: PathBuf) -> Result<Arc<Self>> {
+        let shared_config = Arc::new(RwLock::new(config));
         let handler: MessageHandler = {
-            let cfg = config.clone();
+            let cfg = shared_config.clone();
             Box::new(move |enriched_message: String| {
                 let c = cfg.clone();
-                Box::pin(async move { crate::agent::process_message(c, &enriched_message).await })
+                Box::pin(async move {
+                    let config_snapshot = c.read().await.clone();
+                    crate::agent::process_message(config_snapshot, &enriched_message).await
+                })
             })
         };
-        Self::new_with_handler(config, data_dir, handler)
+        Self::new_with_handler_and_config(shared_config, data_dir, handler)
     }
 
     /// Create a session manager with a custom message handler (for testing).
     pub fn new_with_handler(
         config: Config,
+        data_dir: PathBuf,
+        handler: MessageHandler,
+    ) -> Result<Arc<Self>> {
+        let shared_config = Arc::new(RwLock::new(config));
+        Self::new_with_handler_and_config(shared_config, data_dir, handler)
+    }
+
+    fn new_with_handler_and_config(
+        config: Arc<RwLock<Config>>,
         data_dir: PathBuf,
         handler: MessageHandler,
     ) -> Result<Arc<Self>> {
@@ -93,9 +108,10 @@ impl SessionManager {
 
         let actor_history = history.clone();
         let actor_event_tx = event_tx.clone();
+        let actor_config = config.clone();
 
         let handle = tokio::spawn(async move {
-            agent_actor_loop(handler, actor_history, cmd_rx, actor_event_tx).await;
+            agent_actor_loop(handler, actor_history, actor_config, cmd_rx, actor_event_tx).await;
         });
 
         // Recover turn counter from existing history.
@@ -134,6 +150,7 @@ impl SessionManager {
 async fn agent_actor_loop(
     handler: MessageHandler,
     history: Arc<HistoryStore>,
+    config: Arc<RwLock<Config>>,
     mut rx: mpsc::Receiver<AgentCommand>,
     event_tx: broadcast::Sender<AgentBroadcastEvent>,
 ) {
@@ -157,7 +174,8 @@ async fn agent_actor_loop(
                 });
 
                 // Build context from recent history to provide continuity.
-                let context_messages = history.load_recent(20).unwrap_or_default();
+                let max_history = config.read().await.agent.max_history_messages;
+                let context_messages = history.load_recent(max_history as u64).unwrap_or_default();
                 let context_prefix = build_context_prefix(&context_messages);
                 let enriched_message = if context_prefix.is_empty() {
                     message.clone()
@@ -169,7 +187,7 @@ async fn agent_actor_loop(
                 let result = handler(enriched_message).await;
 
                 match result {
-                    Ok(response) => {
+                    Ok((response, input_tokens, output_tokens)) => {
                         // Save to history store.
                         let _ = history.append(turn_index, "user", &message);
                         let _ = history.append(turn_index, "assistant", &response);
@@ -178,6 +196,8 @@ async fn agent_actor_loop(
                             .send(AgentResponse::Done {
                                 content: response.clone(),
                                 turn_index,
+                                input_tokens,
+                                output_tokens,
                             })
                             .await;
                         let _ = event_tx.send(AgentBroadcastEvent {

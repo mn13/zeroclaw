@@ -1,139 +1,153 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { useState, useEffect, createContext, useContext } from 'react';
-import Layout from './components/layout/Layout';
-import Dashboard from './pages/Dashboard';
-import AgentChat from './pages/AgentChat';
-import Tools from './pages/Tools';
-import Cron from './pages/Cron';
-import Integrations from './pages/Integrations';
-import Memory from './pages/Memory';
-import Config from './pages/Config';
-import Cost from './pages/Cost';
-import Logs from './pages/Logs';
-import Doctor from './pages/Doctor';
-import { AuthProvider, useAuth } from './hooks/useAuth';
-import { setLocale, type Locale } from './lib/i18n';
+import { useState, useCallback, useEffect, useRef } from "react";
+import { Sidebar } from "./components/Sidebar";
+import { Header } from "./components/Header";
+import { Toast } from "./components/Toast";
+import { Login } from "./pages/Login";
+import { Chat } from "./pages/Chat";
+import Config from "./pages/Config";
+import Memory from "./pages/Memory";
+import Tools from "./pages/Tools";
+import Status from "./pages/Status";
+import { useToast } from "./hooks/useToast";
+import { getToken, setToken, listInstances } from "./api";
+import type { InstanceInfo } from "./api";
 
-// Locale context
-interface LocaleContextType {
-  locale: string;
-  setAppLocale: (locale: string) => void;
-}
+export type View = "chat" | "config" | "memory" | "tools" | "status";
 
-export const LocaleContext = createContext<LocaleContextType>({
-  locale: 'tr',
-  setAppLocale: () => {},
-});
+export function App() {
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [instances, setInstances] = useState<InstanceInfo[]>([]);
+  const [currentInstance, setCurrentInstance] = useState("");
+  const [view, setView] = useState<View>("chat");
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const { toast, show: showToast } = useToast();
+  const autoLoginAttempted = useRef(false);
 
-export const useLocaleContext = () => useContext(LocaleContext);
-
-// Pairing dialog component
-function PairingDialog({ onPair }: { onPair: (code: string) => Promise<void> }) {
-  const [code, setCode] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    try {
-      await onPair(code);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Pairing failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <div className="bg-gray-900 rounded-xl p-8 w-full max-w-md border border-gray-800">
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold text-white mb-2">ZeroClaw</h1>
-          <p className="text-gray-400">Enter the pairing code from your terminal</p>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <input
-            type="text"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            placeholder="6-digit code"
-            className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white text-center text-2xl tracking-widest focus:outline-none focus:border-blue-500 mb-4"
-            maxLength={6}
-            autoFocus
-          />
-          {error && (
-            <p className="text-red-400 text-sm mb-4 text-center">{error}</p>
-          )}
-          <button
-            type="submit"
-            disabled={loading || code.length < 6}
-            className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-colors"
-          >
-            {loading ? 'Pairing...' : 'Pair'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function AppContent() {
-  const { isAuthenticated, loading, pair, logout } = useAuth();
-  const [locale, setLocaleState] = useState('tr');
-
-  const setAppLocale = (newLocale: string) => {
-    setLocaleState(newLocale);
-    setLocale(newLocale as Locale);
-  };
-
-  // Listen for 401 events to force logout
+  // Auto-login from ?token= URL parameter
   useEffect(() => {
-    const handler = () => {
-      logout();
-    };
-    window.addEventListener('zeroclaw-unauthorized', handler);
-    return () => window.removeEventListener('zeroclaw-unauthorized', handler);
-  }, [logout]);
+    if (autoLoginAttempted.current || loggedIn) return;
+    autoLoginAttempted.current = true;
 
-  if (loading) {
+    const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get("token");
+    if (!urlToken) return;
+
+    setToken(urlToken);
+    listInstances()
+      .then((insts) => {
+        setLoggedIn(true);
+        setInstances(insts);
+        if (insts.length > 0 && insts[0]) {
+          setCurrentInstance(insts[0].id);
+        }
+        // Clean the token from the URL
+        const url = new URL(window.location.href);
+        url.searchParams.delete("token");
+        window.history.replaceState({}, "", url.toString());
+      })
+      .catch(() => {
+        // Token invalid, fall back to manual login
+        setToken("");
+      });
+  }, [loggedIn]);
+
+  const handleLogin = useCallback((insts: InstanceInfo[]) => {
+    setLoggedIn(true);
+    setInstances(insts);
+    if (insts.length > 0 && insts[0]) {
+      setCurrentInstance(insts[0].id);
+    }
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    setLoggedIn(false);
+    setInstances([]);
+    setCurrentInstance("");
+  }, []);
+
+  if (!loggedIn || !getToken()) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <p className="text-gray-400">Connecting...</p>
+      <div style={{ display: "flex", height: "100vh" }}>
+        <Sidebar
+          view={view}
+          onViewChange={setView}
+          expanded={sidebarExpanded}
+          onToggle={() => setSidebarExpanded((e) => !e)}
+          health="unknown"
+          instanceSelected={false}
+          instances={[]}
+          currentInstance=""
+          onInstanceChange={() => {}}
+        />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+          <Header view={view} />
+          <Login onLogin={handleLogin} />
+        </div>
+        <Toast toast={toast} />
       </div>
     );
   }
 
-  if (!isAuthenticated) {
-    return <PairingDialog onPair={pair} />;
-  }
+  const health = instances.find((i) => i.id === currentInstance)?.health ?? "unknown";
+
+  const renderView = () => {
+    switch (view) {
+      case "chat":
+        return <Chat instanceId={currentInstance} toast={showToast} />;
+      case "config":
+        return <Config instanceId={currentInstance} toast={showToast} />;
+      case "memory":
+        return <Memory instanceId={currentInstance} toast={showToast} />;
+      case "tools":
+        return <Tools instanceId={currentInstance} toast={showToast} />;
+      case "status":
+        return (
+          <Status
+            instanceId={currentInstance}
+            toast={showToast}
+            onLogout={handleLogout}
+          />
+        );
+    }
+  };
 
   return (
-    <LocaleContext.Provider value={{ locale, setAppLocale }}>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/agent" element={<AgentChat />} />
-          <Route path="/tools" element={<Tools />} />
-          <Route path="/cron" element={<Cron />} />
-          <Route path="/integrations" element={<Integrations />} />
-          <Route path="/memory" element={<Memory />} />
-          <Route path="/config" element={<Config />} />
-          <Route path="/cost" element={<Cost />} />
-          <Route path="/logs" element={<Logs />} />
-          <Route path="/doctor" element={<Doctor />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </LocaleContext.Provider>
-  );
-}
-
-export default function App() {
-  return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <div style={{ display: "flex", height: "100vh" }}>
+      <Sidebar
+        view={view}
+        onViewChange={setView}
+        expanded={sidebarExpanded}
+        onToggle={() => setSidebarExpanded((e) => !e)}
+        health={health}
+        instanceSelected={!!currentInstance}
+        instances={instances}
+        currentInstance={currentInstance}
+        onInstanceChange={setCurrentInstance}
+      />
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+        <Header view={view} />
+        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          {currentInstance ? (
+            renderView()
+          ) : (
+            <div
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--text-dim)",
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 12,
+                letterSpacing: 1,
+              }}
+            >
+              SELECT AN INSTANCE TO BEGIN
+            </div>
+          )}
+        </div>
+      </div>
+      <Toast toast={toast} />
+    </div>
   );
 }

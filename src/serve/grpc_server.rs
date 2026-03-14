@@ -87,11 +87,13 @@ impl ClawAgent for ClawAgentService {
                     AgentResponse::Done {
                         content,
                         turn_index: ti,
+                        input_tokens,
+                        output_tokens,
                     } => pb::chat_output::Output::Done(pb::TurnComplete {
                         content,
                         turn_index: ti,
-                        input_tokens: 0,
-                        output_tokens: 0,
+                        input_tokens,
+                        output_tokens,
                     }),
                     AgentResponse::Error(e) => {
                         pb::chat_output::Output::Error(pb::TurnError { message: e })
@@ -198,18 +200,16 @@ impl ClawAgent for ClawAgentService {
 
         let history_length = self.session.history.count().unwrap_or(0);
 
-        let model = self
-            .session
-            .config
+        let cfg = self.session.config.read().await;
+        let model = cfg
             .default_model
             .clone()
             .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514".into());
-        let provider = self
-            .session
-            .config
+        let provider = cfg
             .default_provider
             .clone()
             .unwrap_or_else(|| "openrouter".into());
+        drop(cfg);
 
         Ok(Response::new(pb::StatusResponse {
             state: state.into(),
@@ -236,7 +236,7 @@ impl ClawAgent for ClawAgentService {
         _request: Request<pb::GetConfigRequest>,
     ) -> Result<Response<pb::ConfigResponse>, Status> {
         // Return a sanitized version of the config (no secrets).
-        let mut safe_config = self.session.config.clone();
+        let mut safe_config = self.session.config.read().await.clone();
         safe_config.api_key = safe_config.api_key.as_ref().map(|_| "[REDACTED]".into());
         let json = serde_json::to_string_pretty(&safe_config)
             .map_err(|e| Status::internal(format!("config serialization failed: {e}")))?;
@@ -245,12 +245,58 @@ impl ClawAgent for ClawAgentService {
 
     async fn update_config(
         &self,
-        _request: Request<pb::UpdateConfigRequest>,
+        request: Request<pb::UpdateConfigRequest>,
     ) -> Result<Response<pb::UpdateConfigResponse>, Status> {
-        // Stub: runtime config updates are not yet supported.
-        Err(Status::unimplemented(
-            "runtime config updates are not yet supported",
-        ))
+        let partial_json = request.into_inner().partial_json;
+
+        // Parse the partial JSON patch.
+        let mut patch: serde_json::Value = serde_json::from_str(&partial_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid JSON: {e}")))?;
+
+        let patch_obj = patch
+            .as_object()
+            .ok_or_else(|| Status::invalid_argument("expected a JSON object"))?;
+
+        let updated_fields: Vec<String> = patch_obj.keys().cloned().collect();
+
+        // Strip redacted sentinel values so the UI can't overwrite real secrets
+        // by sending back the "[REDACTED]" placeholder from get_config.
+        strip_redacted(&mut patch);
+
+        // Merge into current config: serialize current → merge patch → deserialize back.
+        // Preserve #[serde(skip)] fields (workspace_dir, config_path) since they are
+        // not included in serialization and would be lost during the round-trip.
+        let mut config = self.session.config.write().await;
+        let workspace_dir = config.workspace_dir.clone();
+        let config_path = config.config_path.clone();
+
+        let mut current_json: serde_json::Value = serde_json::to_value(&*config)
+            .map_err(|e| Status::internal(format!("config serialization failed: {e}")))?;
+
+        json_merge_patch(&mut current_json, &patch);
+
+        let mut new_config: crate::config::Config = serde_json::from_value(current_json)
+            .map_err(|e| Status::invalid_argument(format!("merged config is invalid: {e}")))?;
+        new_config.workspace_dir = workspace_dir;
+        new_config.config_path = config_path.clone();
+
+        // Persist to disk so changes survive restarts.
+        // Clear env-sourced secrets before writing so they don't leak into the file.
+        if !config_path.as_os_str().is_empty() {
+            let mut disk_config = new_config.clone();
+            disk_config.api_key = None;
+            let toml_str = toml::to_string_pretty(&disk_config)
+                .map_err(|e| Status::internal(format!("config TOML serialization failed: {e}")))?;
+            std::fs::write(&config_path, toml_str)
+                .map_err(|e| Status::internal(format!("failed to write config to disk: {e}")))?;
+        }
+
+        *config = new_config;
+
+        Ok(Response::new(pb::UpdateConfigResponse {
+            updated_fields,
+            requires_restart: false,
+        }))
     }
 
     async fn list_memory(
@@ -321,5 +367,46 @@ impl ClawAgent for ClawAgentService {
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// RFC 7396 JSON Merge Patch: recursively merge `patch` into `target`.
+fn json_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    if let serde_json::Value::Object(patch_obj) = patch {
+        if !target.is_object() {
+            *target = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let target_obj = target.as_object_mut().unwrap();
+        for (key, value) in patch_obj {
+            if value.is_null() {
+                target_obj.remove(key);
+            } else if value.is_object() {
+                let entry = target_obj
+                    .entry(key.clone())
+                    .or_insert(serde_json::Value::Object(serde_json::Map::new()));
+                json_merge_patch(entry, value);
+            } else {
+                target_obj.insert(key.clone(), value.clone());
+            }
+        }
+    } else {
+        *target = patch.clone();
+    }
+}
+
+/// Recursively remove any string values equal to "[REDACTED]" from a JSON value,
+/// so that redacted placeholders from get_config don't overwrite real secrets.
+fn strip_redacted(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value {
+        map.retain(|_, v| {
+            if let serde_json::Value::String(s) = v {
+                s != "[REDACTED]"
+            } else {
+                true
+            }
+        });
+        for v in map.values_mut() {
+            strip_redacted(v);
+        }
     }
 }

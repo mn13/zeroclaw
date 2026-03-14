@@ -417,7 +417,7 @@ impl DelegateTool {
         .await;
 
         match result {
-            Ok(Ok(response)) => {
+            Ok(Ok((response, _, _))) => {
                 let rendered = if response.trim().is_empty() {
                     "[Empty response]".to_string()
                 } else {

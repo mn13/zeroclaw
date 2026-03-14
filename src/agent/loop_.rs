@@ -1948,7 +1948,7 @@ pub(crate) async fn agent_turn(
     silent: bool,
     multimodal_config: &crate::config::MultimodalConfig,
     max_tool_iterations: usize,
-) -> Result<String> {
+) -> Result<(String, u64, u64)> {
     run_tool_call_loop(
         provider,
         history,
@@ -2167,12 +2167,14 @@ pub(crate) async fn run_tool_call_loop(
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
-) -> Result<String> {
+) -> Result<(String, u64, u64)> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
         max_tool_iterations
     };
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
 
     let tool_specs: Vec<crate::tools::ToolSpec> = tools_registry
         .iter()
@@ -2276,6 +2278,9 @@ pub(crate) async fn run_tool_call_loop(
                         .as_ref()
                         .map(|u| (u.input_tokens, u.output_tokens))
                         .unwrap_or((None, None));
+
+                    total_input_tokens += resp_input_tokens.unwrap_or(0);
+                    total_output_tokens += resp_output_tokens.unwrap_or(0);
 
                     observer.record_event(&ObserverEvent::LlmResponse {
                         provider: provider_name.to_string(),
@@ -2460,7 +2465,7 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
             history.push(ChatMessage::assistant(response_text.clone()));
-            return Ok(display_text);
+            return Ok((display_text, total_input_tokens, total_output_tokens));
         }
 
         // Print any text the LLM produced alongside tool calls (unless silent)
@@ -3124,8 +3129,8 @@ pub async fn run(
             &config.agent.tool_call_dedup_exempt,
         )
         .await?;
-        final_output = response.clone();
-        println!("{response}");
+        final_output = response.0.clone();
+        println!("{}", response.0);
         observer.record_event(&ObserverEvent::TurnComplete);
     } else {
         println!("🦀 ZeroClaw Interactive Mode");
@@ -3259,7 +3264,7 @@ pub async fn run(
             )
             .await
             {
-                Ok(resp) => resp,
+                Ok((resp, _, _)) => resp,
                 Err(e) => {
                     eprintln!("\nError: {e}\n");
                     continue;
@@ -3309,7 +3314,7 @@ pub async fn run(
 
 /// Process a single message through the full agent (with tools, peripherals, memory).
 /// Used by channels (Telegram, Discord, etc.) to enable hardware and tool use.
-pub async fn process_message(config: Config, message: &str) -> Result<String> {
+pub async fn process_message(config: Config, message: &str) -> Result<(String, u64, u64)> {
     let observer: Arc<dyn Observer> =
         Arc::from(observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -3894,7 +3899,7 @@ mod tests {
         .await
         .expect("valid multimodal payload should pass");
 
-        assert_eq!(result, "vision-ok");
+        assert_eq!(result.0, "vision-ok");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -4021,7 +4026,7 @@ mod tests {
         .await
         .expect("parallel execution should complete");
 
-        assert_eq!(result, "done");
+        assert_eq!(result.0, "done");
         assert!(
             max_active.load(Ordering::SeqCst) >= 1,
             "tools should execute successfully"
@@ -4091,7 +4096,7 @@ mod tests {
         .await
         .expect("loop should finish after deduplicating repeated calls");
 
-        assert_eq!(result, "done");
+        assert_eq!(result.0, "done");
         assert_eq!(
             invocations.load(Ordering::SeqCst),
             1,
@@ -4153,7 +4158,7 @@ mod tests {
         .await
         .expect("loop should finish with exempt tool executing twice");
 
-        assert_eq!(result, "done");
+        assert_eq!(result.0, "done");
         assert_eq!(
             invocations.load(Ordering::SeqCst),
             2,
@@ -4284,7 +4289,7 @@ mod tests {
         .await
         .expect("native fallback id flow should complete");
 
-        assert_eq!(result, "done");
+        assert_eq!(result.0, "done");
         assert_eq!(invocations.load(Ordering::SeqCst), 1);
         assert!(
             history.iter().any(|msg| {
