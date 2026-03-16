@@ -201,6 +201,16 @@ pub async fn instance_action(
             }
             false
         }
+        "restart" => {
+            docker::restart_agent(&id, &state.docker_config.agents_dir)
+                .await
+                .map_err(|e| {
+                    error!(%id, error = %e, "restart_agent failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            state.registry.invalidate_client(&id).await;
+            true
+        }
         "reconnect" => {
             state.registry.invalidate_client(&id).await;
             true

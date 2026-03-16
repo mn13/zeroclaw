@@ -10,11 +10,13 @@ import Tools from "./pages/Tools";
 import Status from "./pages/Status";
 import Admin from "./pages/Admin";
 import Identity from "./pages/Identity";
+import Connectors from "./pages/Connectors";
+import Integrations from "./pages/Integrations";
 import { useToast } from "./hooks/useToast";
 import { getToken, setToken, restoreToken, listInstances } from "./api";
 import type { InstanceInfo } from "./api";
 
-export type View = "chat" | "config" | "memory" | "tools" | "identity" | "status" | "admin";
+export type View = "chat" | "config" | "memory" | "tools" | "identity" | "connectors" | "integrations" | "status" | "admin";
 
 export function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -115,6 +117,10 @@ export function App() {
         return <Tools instanceId={currentInstance} toast={showToast} />;
       case "identity":
         return <Identity instanceId={currentInstance} toast={showToast} />;
+      case "connectors":
+        return <Connectors instanceId={currentInstance} toast={showToast} />;
+      case "integrations":
+        return <Integrations instanceId={currentInstance} toast={showToast} />;
       case "status":
         return (
           <Status

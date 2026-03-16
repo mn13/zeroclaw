@@ -175,7 +175,7 @@ export const createInstance = (id: string, display_name: string, config_toml: st
 
 export const instanceAction = (
   id: string,
-  action: "start" | "stop" | "destroy" | "reconnect",
+  action: "start" | "stop" | "destroy" | "reconnect" | "restart",
   confirm?: boolean,
 ) =>
   api<{ ok: boolean }>(`/api/admin/instances/${encodeURIComponent(id)}/action`, {
@@ -215,6 +215,96 @@ export const batchUpdateIdentity = (id: string, files: IdentityFile[]) =>
   api<{ ok: boolean; saved: number }>(
     `/api/instances/${encodeURIComponent(id)}/identity`,
     { method: "PUT", body: JSON.stringify({ files }) },
+  );
+
+// ── Connectors ──
+export interface ChannelField {
+  name: string;
+  label: string;
+  field_type: string; // "string" | "bool" | "string_list" | "u64" | "select:opt1,opt2,..."
+  required: boolean;
+  sensitive: boolean;
+  help: string;
+}
+
+export interface ChannelSchema {
+  channel_type: string;
+  label: string;
+  fields: ChannelField[];
+}
+
+export interface ConnectorsResponse {
+  channels_config: Record<string, unknown>;
+  channel_schema: ChannelSchema[];
+}
+
+export const getConnectors = (id: string) =>
+  api<ConnectorsResponse>(`/api/instances/${encodeURIComponent(id)}/connectors`);
+
+export const updateConnectors = (id: string, channels_config: Record<string, unknown>) =>
+  api<{ ok: boolean; requires_restart: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/connectors`,
+    { method: "PUT", body: JSON.stringify({ channels_config }) },
+  );
+
+// ── MCP Servers ──
+export interface McpServerConfig {
+  name: string;
+  transport: "sse" | "stdio";
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  enabled: boolean;
+}
+
+export const getMcpServers = (id: string) =>
+  api<{ mcp_servers: McpServerConfig[] }>(`/api/instances/${encodeURIComponent(id)}/mcp-servers`);
+
+export const updateMcpServers = (id: string, mcp_servers: McpServerConfig[]) =>
+  api<{ ok: boolean; requires_restart: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/mcp-servers`,
+    { method: "PUT", body: JSON.stringify({ mcp_servers }) },
+  );
+
+// ── Integrations: Composio ──
+export interface ComposioConfig {
+  enabled: boolean;
+  entity_id: string;
+  has_api_key: boolean;
+}
+
+export const getComposio = (id: string) =>
+  api<ComposioConfig>(`/api/instances/${encodeURIComponent(id)}/integrations/composio`);
+
+export const updateComposio = (
+  id: string,
+  data: { enabled?: boolean; api_key?: string; entity_id?: string },
+) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/composio`,
+    { method: "PUT", body: JSON.stringify(data) },
+  );
+
+// ── Skills ──
+export interface SkillFile {
+  name: string;
+  content: string;
+}
+
+export const listSkills = (id: string) =>
+  api<{ skills: SkillFile[] }>(`/api/instances/${encodeURIComponent(id)}/skills`);
+
+export const updateSkill = (id: string, name: string, content: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/skills/${encodeURIComponent(name)}`,
+    { method: "PUT", body: JSON.stringify({ content }) },
+  );
+
+export const deleteSkill = (id: string, name: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/skills/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
   );
 
 // ── WebSocket ──

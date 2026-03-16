@@ -150,9 +150,9 @@ async fn main() -> anyhow::Result<()> {
         grpc_secret.clone(),
     ));
 
-    // Auto-start stopped agent containers on boot
+    // Sync configs and auto-start stopped agent containers on boot
     let instance_ids: Vec<String> = config.instances.keys().cloned().collect();
-    docker::ensure_agents_running(&instance_ids).await;
+    docker::ensure_agents_running(&instance_ids, &docker_config.agents_dir).await;
 
     registry.spawn_health_loop();
 
@@ -220,7 +220,28 @@ fn build_router(state: AppState) -> Router {
             "/api/admin/instances/{id}/action",
             post(admin::instance_action),
         )
-        .route("/api/admin/template", get(admin::get_template));
+        .route("/api/admin/template", get(admin::get_template))
+        // Connectors
+        .route(
+            "/api/instances/{id}/connectors",
+            get(api::get_connectors).put(api::update_connectors),
+        )
+        // MCP Servers
+        .route(
+            "/api/instances/{id}/mcp-servers",
+            get(api::get_mcp_servers).put(api::update_mcp_servers),
+        )
+        // Integrations: Composio
+        .route(
+            "/api/instances/{id}/integrations/composio",
+            get(api::get_composio).put(api::update_composio),
+        )
+        // Skills
+        .route("/api/instances/{id}/skills", get(api::list_skills))
+        .route(
+            "/api/instances/{id}/skills/{name}",
+            put(api::update_skill).delete(api::delete_skill),
+        );
 
     let spa = Router::new().fallback(static_files::static_handler);
 

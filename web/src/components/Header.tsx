@@ -11,6 +11,8 @@ const viewTitles: Record<View, string> = {
   memory: "MEMORY",
   tools: "TOOLS",
   identity: "IDENTITY",
+  connectors: "CONNECTORS",
+  integrations: "INTEGRATIONS",
   status: "STATUS",
   admin: "ADMIN PANEL",
 };

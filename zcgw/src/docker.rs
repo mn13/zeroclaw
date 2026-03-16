@@ -275,6 +275,24 @@ pub async fn stop_agent(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Restart a running container, syncing the host config into the data directory first.
+pub async fn restart_agent(id: &str, agents_dir: &Path) -> anyhow::Result<()> {
+    // Sync host config → data dir so the agent picks up changes
+    sync_agent_config(id, agents_dir).await;
+
+    let container = resolve_container(id).await?;
+    let output = Command::new("docker")
+        .args(["restart", &container])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("docker restart failed: {}", stderr);
+    }
+    Ok(())
+}
+
 /// Stop and remove a container and clean up its agent directory.
 pub async fn destroy_agent(id: &str, agents_dir: &Path) -> anyhow::Result<()> {
     let container = match resolve_container(id).await {
@@ -333,11 +351,35 @@ pub async fn get_container_status(id: &str) -> anyhow::Result<String> {
     Ok(status)
 }
 
+/// Sync the host config into the agent's data directory so the container
+/// picks up changes on next start/restart.
+pub async fn sync_agent_config(id: &str, agents_dir: &Path) {
+    let host_config = agents_dir.join(id).join("config.toml");
+    let data_config = agents_dir
+        .join(id)
+        .join("data")
+        .join(".zeroclaw")
+        .join("config.toml");
+    if host_config.exists() {
+        if let Some(parent) = data_config.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        if let Err(e) = tokio::fs::copy(&host_config, &data_config).await {
+            warn!(id, error = %e, "failed to sync agent config");
+        } else {
+            debug!(id, "synced host config to data dir");
+        }
+    }
+}
+
 /// Ensure all registered agents have running containers.
-/// Tries to start stopped containers. Skips agents without containers
-/// (e.g. compose-managed agents that are already running).
-pub async fn ensure_agents_running(instance_ids: &[String]) {
+/// Syncs host configs and tries to start stopped containers.
+/// Skips agents without containers (e.g. compose-managed agents).
+pub async fn ensure_agents_running(instance_ids: &[String], agents_dir: &Path) {
     for id in instance_ids {
+        // Always sync host config → data dir so the agent reads the latest config
+        sync_agent_config(id, agents_dir).await;
+
         match resolve_container(id).await {
             Ok(container) => {
                 // Check if it's running

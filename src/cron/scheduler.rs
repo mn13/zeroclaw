@@ -299,7 +299,7 @@ async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> 
     deliver_announcement(config, channel, target, output).await
 }
 
-pub(crate) async fn deliver_announcement(
+pub async fn deliver_announcement(
     config: &Config,
     channel: &str,
     target: &str,

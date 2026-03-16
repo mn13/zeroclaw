@@ -561,6 +561,457 @@ pub async fn batch_update_identity(
     Ok(Json(serde_json::json!({ "ok": true, "saved": saved })))
 }
 
+// ---------- Agent Config Helpers ----------
+
+/// Primary config path: host-level file written by the gateway.
+fn agent_config_path(state: &AppState, id: &str) -> std::path::PathBuf {
+    state.docker_config.agents_dir.join(id).join("config.toml")
+}
+
+/// Fallback config path: inside the agent's data directory (used by
+/// pre-existing or Docker Compose-managed agents that don't have a
+/// host-level config file).
+fn agent_config_fallback_path(state: &AppState, id: &str) -> std::path::PathBuf {
+    state
+        .docker_config
+        .agents_dir
+        .join(id)
+        .join("data")
+        .join(".zeroclaw")
+        .join("config.toml")
+}
+
+async fn read_agent_config(state: &AppState, id: &str) -> Result<toml::Value, StatusCode> {
+    let primary = agent_config_path(state, id);
+    let path = if primary.exists() {
+        primary
+    } else {
+        // Fall back to the data-dir config for pre-existing agents
+        let fallback = agent_config_fallback_path(state, id);
+        if fallback.exists() {
+            fallback
+        } else {
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    toml::from_str(&content).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn write_agent_config(
+    state: &AppState,
+    id: &str,
+    val: &toml::Value,
+) -> Result<(), StatusCode> {
+    let path = agent_config_path(state, id);
+    // Ensure the host-level directory exists (for pre-existing agents
+    // that only had a data-dir config).
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let content = toml::to_string_pretty(val).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+// ---------- Connectors ----------
+
+/// Channel field descriptor for the frontend schema.
+#[derive(Serialize)]
+struct ChannelField {
+    name: &'static str,
+    label: &'static str,
+    field_type: &'static str,
+    required: bool,
+    sensitive: bool,
+    help: &'static str,
+}
+
+/// Channel type descriptor.
+#[derive(Serialize)]
+struct ChannelDescriptor {
+    channel_type: &'static str,
+    label: &'static str,
+    fields: Vec<ChannelField>,
+}
+
+fn channel_schema() -> Vec<ChannelDescriptor> {
+    vec![
+        ChannelDescriptor {
+            channel_type: "telegram",
+            label: "Telegram",
+            fields: vec![
+                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Telegram bot token from @BotFather" },
+                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Telegram user IDs or usernames. Empty = deny all" },
+                ChannelField { name: "stream_mode", label: "Stream Mode", field_type: "select:off,partial", required: false, sensitive: false, help: "off = single message, partial = progressive edits" },
+                ChannelField { name: "draft_update_interval_ms", label: "Draft Update Interval (ms)", field_type: "u64", required: false, sensitive: false, help: "Min interval between draft edits (default: 1000)" },
+                ChannelField { name: "interrupt_on_new_message", label: "Interrupt on New Message", field_type: "bool", required: false, sensitive: false, help: "Cancel in-flight request on new message from same sender" },
+                ChannelField { name: "mention_only", label: "Mention Only", field_type: "bool", required: false, sensitive: false, help: "Only respond to @-mentions in groups (DMs always processed)" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "discord",
+            label: "Discord",
+            fields: vec![
+                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Discord bot token" },
+                ChannelField { name: "guild_id", label: "Guild ID", field_type: "string", required: false, sensitive: false, help: "Restrict to a specific guild" },
+                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Allowed user IDs" },
+                ChannelField { name: "listen_to_bots", label: "Listen to Bots", field_type: "bool", required: false, sensitive: false, help: "Process messages from other bots" },
+                ChannelField { name: "mention_only", label: "Mention Only", field_type: "bool", required: false, sensitive: false, help: "Only respond when mentioned" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "slack",
+            label: "Slack",
+            fields: vec![
+                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Slack bot token (xoxb-...)" },
+                ChannelField { name: "app_token", label: "App Token", field_type: "string", required: false, sensitive: true, help: "Socket mode app token (xapp-...)" },
+                ChannelField { name: "channel_id", label: "Channel ID", field_type: "string", required: false, sensitive: false, help: "Default channel ID" },
+                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Allowed user IDs" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "whatsapp",
+            label: "WhatsApp",
+            fields: vec![
+                ChannelField { name: "access_token", label: "Access Token", field_type: "string", required: false, sensitive: true, help: "Cloud API access token" },
+                ChannelField { name: "phone_number_id", label: "Phone Number ID", field_type: "string", required: false, sensitive: false, help: "Cloud API phone number ID" },
+                ChannelField { name: "session_path", label: "Session Path", field_type: "string", required: false, sensitive: false, help: "Web client session path (alternative to Cloud)" },
+                ChannelField { name: "allowed_numbers", label: "Allowed Numbers", field_type: "string_list", required: false, sensitive: false, help: "Allowed phone numbers" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "email",
+            label: "Email",
+            fields: vec![
+                ChannelField { name: "imap_host", label: "IMAP Host", field_type: "string", required: true, sensitive: false, help: "IMAP server hostname" },
+                ChannelField { name: "smtp_host", label: "SMTP Host", field_type: "string", required: true, sensitive: false, help: "SMTP server hostname" },
+                ChannelField { name: "username", label: "Username", field_type: "string", required: true, sensitive: false, help: "Email account username" },
+                ChannelField { name: "password", label: "Password", field_type: "string", required: true, sensitive: true, help: "Email account password" },
+                ChannelField { name: "from_address", label: "From Address", field_type: "string", required: true, sensitive: false, help: "Sender email address" },
+                ChannelField { name: "allowed_senders", label: "Allowed Senders", field_type: "string_list", required: false, sensitive: false, help: "Allowed sender addresses" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "signal",
+            label: "Signal",
+            fields: vec![
+                ChannelField { name: "http_url", label: "HTTP URL", field_type: "string", required: true, sensitive: false, help: "signal-cli REST API URL" },
+                ChannelField { name: "account", label: "Account", field_type: "string", required: true, sensitive: false, help: "Signal account phone number" },
+                ChannelField { name: "group_id", label: "Group ID", field_type: "string", required: false, sensitive: false, help: "Signal group ID" },
+                ChannelField { name: "allowed_from", label: "Allowed From", field_type: "string_list", required: false, sensitive: false, help: "Allowed sender numbers" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "matrix",
+            label: "Matrix",
+            fields: vec![
+                ChannelField { name: "homeserver", label: "Homeserver", field_type: "string", required: true, sensitive: false, help: "Matrix homeserver URL" },
+                ChannelField { name: "access_token", label: "Access Token", field_type: "string", required: true, sensitive: true, help: "Matrix access token" },
+                ChannelField { name: "room_id", label: "Room ID", field_type: "string", required: true, sensitive: false, help: "Room to join" },
+                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: true, sensitive: false, help: "Allowed Matrix user IDs" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "irc",
+            label: "IRC",
+            fields: vec![
+                ChannelField { name: "server", label: "Server", field_type: "string", required: true, sensitive: false, help: "IRC server address" },
+                ChannelField { name: "nickname", label: "Nickname", field_type: "string", required: true, sensitive: false, help: "Bot nickname" },
+                ChannelField { name: "channels", label: "Channels", field_type: "string_list", required: false, sensitive: false, help: "Channels to join" },
+                ChannelField { name: "server_password", label: "Server Password", field_type: "string", required: false, sensitive: true, help: "Server password" },
+            ],
+        },
+        ChannelDescriptor {
+            channel_type: "mattermost",
+            label: "Mattermost",
+            fields: vec![
+                ChannelField { name: "url", label: "URL", field_type: "string", required: true, sensitive: false, help: "Mattermost server URL" },
+                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Mattermost bot token" },
+                ChannelField { name: "channel_id", label: "Channel ID", field_type: "string", required: false, sensitive: false, help: "Default channel ID" },
+                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Allowed user IDs" },
+            ],
+        },
+    ]
+}
+
+pub async fn get_connectors(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let config = read_agent_config(&state, &id).await?;
+    let mut channels_config = config
+        .get("channels_config")
+        .cloned()
+        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
+
+    // Inject "enabled: true" into each existing channel sub-table so the
+    // frontend knows which channels are currently active in the TOML.
+    if let toml::Value::Table(ref mut channels) = channels_config {
+        for (_key, val) in channels.iter_mut() {
+            if let toml::Value::Table(ref mut ch) = val {
+                ch.entry("enabled")
+                    .or_insert(toml::Value::Boolean(true));
+            }
+        }
+    }
+
+    // Convert toml::Value to serde_json::Value
+    let channels_json: serde_json::Value =
+        serde_json::to_value(&channels_config).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({
+        "channels_config": channels_json,
+        "channel_schema": channel_schema(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateConnectorsBody {
+    channels_config: serde_json::Value,
+}
+
+pub async fn update_connectors(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateConnectorsBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut config = read_agent_config(&state, &id).await?;
+
+    // Convert JSON to toml, then clean up:
+    // - Strip the UI-only "enabled" field from each channel sub-table
+    // - Remove channel sub-tables where enabled was false (i.e. disabled channels)
+    let mut channels_toml: toml::Value = serde_json::from_value(body.channels_config)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    if let toml::Value::Table(ref mut channels) = channels_toml {
+        let keys: Vec<String> = channels.keys().cloned().collect();
+        for key in keys {
+            let remove = if let Some(toml::Value::Table(ref mut ch)) = channels.get_mut(&key) {
+                // Check if enabled is false — if so, remove the whole channel
+                let enabled = ch
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                // Always strip the "enabled" field — not part of the agent schema
+                ch.remove("enabled");
+                !enabled
+            } else {
+                false
+            };
+            if remove {
+                channels.remove(&key);
+            }
+        }
+    }
+
+    // Ensure required `cli` field is present (defaults to true).
+    if let toml::Value::Table(ref mut channels) = channels_toml {
+        channels
+            .entry("cli")
+            .or_insert(toml::Value::Boolean(true));
+    }
+
+    if let toml::Value::Table(ref mut t) = config {
+        t.insert("channels_config".to_string(), channels_toml);
+    }
+
+    write_agent_config(&state, &id, &config).await?;
+    Ok(Json(
+        serde_json::json!({ "ok": true, "requires_restart": true }),
+    ))
+}
+
+// ---------- MCP Servers ----------
+
+pub async fn get_mcp_servers(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let config = read_agent_config(&state, &id).await?;
+    let mcp_servers = config
+        .get("mcp_servers")
+        .cloned()
+        .unwrap_or(toml::Value::Array(vec![]));
+
+    let mcp_json: serde_json::Value =
+        serde_json::to_value(&mcp_servers).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({ "mcp_servers": mcp_json })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateMcpServersBody {
+    mcp_servers: serde_json::Value,
+}
+
+pub async fn update_mcp_servers(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateMcpServersBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut config = read_agent_config(&state, &id).await?;
+
+    let mcp_toml: toml::Value =
+        serde_json::from_value(body.mcp_servers).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    if let toml::Value::Table(ref mut t) = config {
+        t.insert("mcp_servers".to_string(), mcp_toml);
+    }
+
+    write_agent_config(&state, &id, &config).await?;
+    Ok(Json(
+        serde_json::json!({ "ok": true, "requires_restart": true }),
+    ))
+}
+
+// ---------- Integrations: Composio ----------
+
+pub async fn get_composio(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let config = read_agent_config(&state, &id).await?;
+    let composio = config.get("composio");
+
+    let enabled = composio
+        .and_then(|c| c.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let entity_id = composio
+        .and_then(|c| c.get("entity_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    // Mask api_key: only show if it exists
+    let has_api_key = composio
+        .and_then(|c| c.get("api_key"))
+        .and_then(|v| v.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+
+    Ok(Json(serde_json::json!({
+        "enabled": enabled,
+        "entity_id": entity_id,
+        "has_api_key": has_api_key,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateComposioBody {
+    enabled: Option<bool>,
+    api_key: Option<String>,
+    entity_id: Option<String>,
+}
+
+pub async fn update_composio(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateComposioBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut config = read_agent_config(&state, &id).await?;
+
+    if let toml::Value::Table(ref mut t) = config {
+        let composio = t
+            .entry("composio")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if let toml::Value::Table(ref mut ct) = composio {
+            if let Some(enabled) = body.enabled {
+                ct.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+            }
+            if let Some(api_key) = body.api_key {
+                ct.insert("api_key".to_string(), toml::Value::String(api_key));
+            }
+            if let Some(entity_id) = body.entity_id {
+                ct.insert("entity_id".to_string(), toml::Value::String(entity_id));
+            }
+        }
+    }
+
+    write_agent_config(&state, &id, &config).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ---------- Skills ----------
+
+fn agent_skills_dir(state: &AppState, id: &str) -> std::path::PathBuf {
+    agent_workspace_dir(state, id).join("skills")
+}
+
+pub async fn list_skills(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let skills_dir = agent_skills_dir(&state, &id);
+    if !skills_dir.exists() {
+        return Ok(Json(serde_json::json!({ "skills": [] })));
+    }
+
+    let mut entries = tokio::fs::read_dir(&skills_dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut skills = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".md") {
+            if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
+                skills.push(serde_json::json!({ "name": name, "content": content }));
+            }
+        }
+    }
+
+    skills.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    Ok(Json(serde_json::json!({ "skills": skills })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateSkillBody {
+    content: String,
+}
+
+pub async fn update_skill(
+    State(state): State<AppState>,
+    Path((id, name)): Path<(String, String)>,
+    Json(body): Json<UpdateSkillBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !name.ends_with(".md") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let skills_dir = agent_skills_dir(&state, &id);
+    tokio::fs::create_dir_all(&skills_dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = skills_dir.join(&name);
+    tokio::fs::write(&path, &body.content)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn delete_skill(
+    State(state): State<AppState>,
+    Path((id, name)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !name.ends_with(".md") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let path = agent_skills_dir(&state, &id).join(&name);
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 // ---------- Chat (non-streaming REST) ----------
 
 #[derive(Deserialize)]
