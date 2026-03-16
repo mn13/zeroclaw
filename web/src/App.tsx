@@ -12,11 +12,12 @@ import Admin from "./pages/Admin";
 import Identity from "./pages/Identity";
 import Connectors from "./pages/Connectors";
 import Integrations from "./pages/Integrations";
+import Cron from "./pages/Cron";
 import { useToast } from "./hooks/useToast";
 import { getToken, setToken, restoreToken, listInstances } from "./api";
 import type { InstanceInfo } from "./api";
 
-export type View = "chat" | "config" | "memory" | "tools" | "identity" | "connectors" | "integrations" | "status" | "admin";
+export type View = "chat" | "config" | "memory" | "tools" | "identity" | "connectors" | "integrations" | "cron" | "status" | "admin";
 
 export function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -121,6 +122,8 @@ export function App() {
         return <Connectors instanceId={currentInstance} toast={showToast} />;
       case "integrations":
         return <Integrations instanceId={currentInstance} toast={showToast} />;
+      case "cron":
+        return <Cron instanceId={currentInstance} toast={showToast} />;
       case "status":
         return (
           <Status

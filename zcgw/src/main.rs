@@ -236,6 +236,19 @@ fn build_router(state: AppState) -> Router {
             "/api/instances/{id}/integrations/composio",
             get(api::get_composio).put(api::update_composio),
         )
+        // Cron Jobs
+        .route(
+            "/api/instances/{id}/cron",
+            get(api::list_cron_jobs).post(api::create_cron_job),
+        )
+        .route(
+            "/api/instances/{id}/cron/{job_id}",
+            put(api::update_cron_job).delete(api::delete_cron_job),
+        )
+        .route(
+            "/api/instances/{id}/cron/{job_id}/runs",
+            get(api::get_cron_runs),
+        )
         // Skills
         .route("/api/instances/{id}/skills", get(api::list_skills))
         .route(

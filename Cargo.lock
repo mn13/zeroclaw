@@ -7940,6 +7940,7 @@ dependencies = [
  "futures-util",
  "mime_guess",
  "prost 0.13.5",
+ "rusqlite",
  "rust-embed",
  "serde",
  "serde_json",

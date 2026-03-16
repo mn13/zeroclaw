@@ -13,6 +13,7 @@ const viewTitles: Record<View, string> = {
   identity: "IDENTITY",
   connectors: "CONNECTORS",
   integrations: "INTEGRATIONS",
+  cron: "CRON JOBS",
   status: "STATUS",
   admin: "ADMIN PANEL",
 };

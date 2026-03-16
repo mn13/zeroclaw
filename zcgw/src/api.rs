@@ -1012,6 +1012,269 @@ pub async fn delete_skill(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+// ---------- Cron Jobs ----------
+
+/// Path to the agent's cron SQLite database on the host filesystem.
+fn agent_cron_db_path(state: &AppState, id: &str) -> std::path::PathBuf {
+    agent_workspace_dir(state, id).join("cron").join("jobs.db")
+}
+
+pub async fn list_cron_jobs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db_path = agent_cron_db_path(&state, &id);
+    if !db_path.exists() {
+        return Ok(Json(serde_json::json!({ "jobs": [] })));
+    }
+
+    let jobs = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<serde_json::Value>> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT id, expression, command, schedule, job_type, prompt, name, \
+             enabled, next_run, last_run, last_status, last_output, created_at, \
+             session_target, model, delivery, delete_after_run \
+             FROM cron_jobs ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "expression": row.get::<_, String>(1).unwrap_or_default(),
+                "command": row.get::<_, String>(2).unwrap_or_default(),
+                "schedule": row.get::<_, String>(3).unwrap_or_default(),
+                "job_type": row.get::<_, String>(4).unwrap_or_default(),
+                "prompt": row.get::<_, String>(5).unwrap_or_default(),
+                "name": row.get::<_, String>(6).unwrap_or_default(),
+                "enabled": row.get::<_, bool>(7).unwrap_or(true),
+                "next_run": row.get::<_, String>(8).unwrap_or_default(),
+                "last_run": row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                "last_status": row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+                "last_output": row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                "created_at": row.get::<_, String>(12).unwrap_or_default(),
+                "session_target": row.get::<_, String>(13).unwrap_or_default(),
+                "model": row.get::<_, Option<String>>(14)?.unwrap_or_default(),
+                "delivery": row.get::<_, Option<String>>(15)?.unwrap_or_default(),
+                "delete_after_run": row.get::<_, bool>(16).unwrap_or(false),
+            }))
+        })?;
+        let mut jobs = Vec::new();
+        for row in rows {
+            jobs.push(row?);
+        }
+        Ok(jobs)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({ "jobs": jobs })))
+}
+
+pub async fn get_cron_runs(
+    State(state): State<AppState>,
+    Path((id, job_id)): Path<(String, String)>,
+    Query(q): Query<CronRunsQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db_path = agent_cron_db_path(&state, &id);
+    if !db_path.exists() {
+        return Ok(Json(serde_json::json!({ "runs": [] })));
+    }
+
+    let limit = q.limit.unwrap_or(20);
+    let runs = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<serde_json::Value>> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT id, job_id, started_at, finished_at, status, output, duration_ms \
+             FROM cron_runs WHERE job_id = ?1 ORDER BY started_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![job_id, limit], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "job_id": row.get::<_, String>(1)?,
+                "started_at": row.get::<_, String>(2).unwrap_or_default(),
+                "finished_at": row.get::<_, String>(3).unwrap_or_default(),
+                "status": row.get::<_, String>(4).unwrap_or_default(),
+                "output": row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                "duration_ms": row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+            }))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({ "runs": runs })))
+}
+
+#[derive(Deserialize)]
+pub struct CronRunsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateCronJobBody {
+    name: String,
+    expression: String,
+    job_type: String,
+    command: Option<String>,
+    prompt: Option<String>,
+}
+
+pub async fn create_cron_job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateCronJobBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db_path = agent_cron_db_path(&state, &id);
+    // Ensure cron directory exists
+    if let Some(parent) = db_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job_id_clone = job_id.clone();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS cron_jobs (
+                id               TEXT PRIMARY KEY,
+                expression       TEXT NOT NULL,
+                command          TEXT NOT NULL,
+                schedule         TEXT,
+                job_type         TEXT NOT NULL DEFAULT 'shell',
+                prompt           TEXT,
+                name             TEXT,
+                session_target   TEXT NOT NULL DEFAULT 'isolated',
+                model            TEXT,
+                enabled          INTEGER NOT NULL DEFAULT 1,
+                delivery         TEXT,
+                delete_after_run INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT NOT NULL,
+                next_run         TEXT NOT NULL,
+                last_run         TEXT,
+                last_status      TEXT,
+                last_output      TEXT
+            );
+            CREATE TABLE IF NOT EXISTS cron_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id      TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                status      TEXT NOT NULL,
+                output      TEXT,
+                duration_ms INTEGER,
+                FOREIGN KEY (job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
+            );",
+        )?;
+        conn.execute(
+            "INSERT INTO cron_jobs (id, name, expression, command, prompt, job_type, enabled, created_at, next_run) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, '')",
+            rusqlite::params![
+                job_id_clone,
+                body.name,
+                body.expression,
+                body.command.unwrap_or_default(),
+                body.prompt.unwrap_or_default(),
+                body.job_type,
+                now,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({ "ok": true, "id": job_id })))
+}
+
+pub async fn update_cron_job(
+    State(state): State<AppState>,
+    Path((id, job_id)): Path<(String, String)>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db_path = agent_cron_db_path(&state, &id);
+    if !db_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = rusqlite::Connection::open(&db_path)?;
+        // Build SET clauses from the JSON body
+        let allowed = [
+            "name",
+            "expression",
+            "command",
+            "prompt",
+            "enabled",
+            "job_type",
+        ];
+        for field in &allowed {
+            if let Some(val) = body.get(field) {
+                let sql = format!("UPDATE cron_jobs SET {} = ?1 WHERE id = ?2", field);
+                match val {
+                    serde_json::Value::Bool(b) => {
+                        conn.execute(&sql, rusqlite::params![*b as i32, job_id])?;
+                    }
+                    serde_json::Value::String(s) => {
+                        conn.execute(&sql, rusqlite::params![s, job_id])?;
+                    }
+                    serde_json::Value::Number(n) => {
+                        conn.execute(
+                            &sql,
+                            rusqlite::params![n.as_i64().unwrap_or(0), job_id],
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn delete_cron_job(
+    State(state): State<AppState>,
+    Path((id, job_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db_path = agent_cron_db_path(&state, &id);
+    if !db_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute("DELETE FROM cron_runs WHERE job_id = ?1", rusqlite::params![job_id])?;
+        conn.execute("DELETE FROM cron_jobs WHERE id = ?1", rusqlite::params![job_id])?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 // ---------- Chat (non-streaming REST) ----------
 
 #[derive(Deserialize)]

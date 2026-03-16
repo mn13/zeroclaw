@@ -23,6 +23,7 @@ const navItems: { key: View; icon: string; label: string }[] = [
   { key: "identity", icon: "\u2662", label: "IDENTITY" },
   { key: "connectors", icon: "\u2261", label: "CONNECT" },
   { key: "integrations", icon: "\u2A01", label: "INTEGRATE" },
+  { key: "cron", icon: "\u23F0", label: "CRON" },
   { key: "status", icon: "\u25CB", label: "STATUS" },
 ];
 

@@ -307,6 +307,66 @@ export const deleteSkill = (id: string, name: string) =>
     { method: "DELETE" },
   );
 
+// ── Cron Jobs ──
+export interface CronJob {
+  id: string;
+  name: string;
+  expression: string;
+  schedule: string;
+  command: string;
+  prompt: string;
+  job_type: string; // "shell" | "agent"
+  enabled: boolean;
+  next_run: string;
+  last_run: string;
+  last_status: string;
+  last_output: string;
+  created_at: string;
+  session_target: string;
+  model: string;
+  delivery: string;
+  delete_after_run: boolean;
+}
+
+export interface CronRun {
+  id: number;
+  job_id: string;
+  started_at: string;
+  finished_at: string;
+  status: string;
+  output: string;
+  duration_ms: number;
+}
+
+export const listCronJobs = (id: string) =>
+  api<{ jobs: CronJob[] }>(`/api/instances/${encodeURIComponent(id)}/cron`);
+
+export const getCronRuns = (id: string, jobId: string, limit = 20) =>
+  api<{ runs: CronRun[] }>(
+    `/api/instances/${encodeURIComponent(id)}/cron/${encodeURIComponent(jobId)}/runs?limit=${limit}`,
+  );
+
+export const createCronJob = (
+  id: string,
+  job: { name: string; expression: string; job_type: string; command?: string; prompt?: string },
+) =>
+  api<{ ok: boolean; id: string }>(`/api/instances/${encodeURIComponent(id)}/cron`, {
+    method: "POST",
+    body: JSON.stringify(job),
+  });
+
+export const updateCronJob = (id: string, jobId: string, patch: Record<string, unknown>) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/cron/${encodeURIComponent(jobId)}`,
+    { method: "PUT", body: JSON.stringify(patch) },
+  );
+
+export const deleteCronJob = (id: string, jobId: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/cron/${encodeURIComponent(jobId)}`,
+    { method: "DELETE" },
+  );
+
 // ── WebSocket ──
 export function connectChat(instanceId: string): WebSocket {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
