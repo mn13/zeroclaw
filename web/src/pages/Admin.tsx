@@ -7,8 +7,9 @@ import {
   createInstance,
   instanceAction,
   getAgentTemplate,
+  batchUpdateIdentity,
 } from "../api";
-import type { AdminStats, DetailedInstance, InstanceInfo } from "../api";
+import type { AdminStats, DetailedInstance, InstanceInfo, IdentityFile } from "../api";
 import { clipCorner } from "../theme";
 
 interface Props {
@@ -142,6 +143,13 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
   const [templateLoaded, setTemplateLoaded] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
+  // Identity files for new agent
+  const [identityFiles, setIdentityFiles] = useState<IdentityFile[]>([
+    { filename: "SOUL.md", content: "" },
+    { filename: "IDENTITY.md", content: "" },
+  ]);
+  const [activeIdentityFile, setActiveIdentityFile] = useState<string>("SOUL.md");
+
   // Confirm destroy
   const [destroyConfirm, setDestroyConfirm] = useState<string | null>(null);
 
@@ -250,12 +258,21 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
     const toml = showRawToml ? newTomlRaw : sectionsToToml(newConfig);
     try {
       await createInstance(newId.trim(), newName.trim(), toml);
+      // Save identity files (non-empty ones)
+      const filesToSave = identityFiles.filter((f) => f.content.trim());
+      if (filesToSave.length > 0) {
+        await batchUpdateIdentity(newId.trim(), filesToSave);
+      }
       toast(`Instance '${newId.trim()}' created`);
       setNewId("");
       setNewName("");
       setTemplateLoaded(false);
       setNewConfig({});
       setNewTomlRaw("");
+      setIdentityFiles([
+        { filename: "SOUL.md", content: "" },
+        { filename: "IDENTITY.md", content: "" },
+      ]);
       loadDashboard();
       onInstancesChange();
       // Refresh again after health check completes (background check takes ~4-10s)
@@ -263,7 +280,7 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
     } catch (err: unknown) {
       toast(err instanceof Error ? err.message : "Create failed", true);
     }
-  }, [newId, newName, newConfig, newTomlRaw, showRawToml, toast, loadDashboard, onInstancesChange]);
+  }, [newId, newName, newConfig, newTomlRaw, showRawToml, identityFiles, toast, loadDashboard, onInstancesChange]);
 
   const sectionHeading: React.CSSProperties = {
     fontFamily: "Syne, sans-serif",
@@ -842,6 +859,78 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
               );
             })}
           </div>
+        )}
+
+        {/* Identity Files */}
+        <div style={{ ...labelStyle, marginTop: 18, marginBottom: 8 }}>Identity Files (Optional)</div>
+        <div
+          style={{
+            display: "flex",
+            gap: 6,
+            marginBottom: 8,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          {identityFiles.map((f) => (
+            <button
+              key={f.filename}
+              onClick={() => setActiveIdentityFile(f.filename)}
+              style={{
+                ...btnSecondary,
+                padding: "4px 10px",
+                fontSize: 10,
+                borderColor: activeIdentityFile === f.filename ? "var(--amber)" : "var(--border)",
+                color: activeIdentityFile === f.filename ? "var(--amber)" : f.content ? "var(--text-primary)" : "var(--text-dim)",
+              }}
+            >
+              {f.filename}
+              {f.content ? " *" : ""}
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              const name = prompt("Filename (e.g. CUSTOM.md):");
+              if (!name) return;
+              const fn = name.endsWith(".md") ? name : name + ".md";
+              if (identityFiles.find((f) => f.filename === fn)) {
+                setActiveIdentityFile(fn);
+                return;
+              }
+              setIdentityFiles((prev) => [...prev, { filename: fn, content: "" }]);
+              setActiveIdentityFile(fn);
+            }}
+            style={{ ...btnSecondary, padding: "4px 10px", fontSize: 10 }}
+          >
+            + Add
+          </button>
+        </div>
+        {activeIdentityFile && (
+          <textarea
+            value={identityFiles.find((f) => f.filename === activeIdentityFile)?.content || ""}
+            onChange={(e) => {
+              const val = e.target.value;
+              setIdentityFiles((prev) =>
+                prev.map((f) => (f.filename === activeIdentityFile ? { ...f, content: val } : f)),
+              );
+            }}
+            placeholder={`Write ${activeIdentityFile} content here...\nThis defines the agent's personality and behavior.`}
+            rows={8}
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              background: "var(--bg-input)",
+              border: "1px solid var(--border)",
+              color: "var(--text-primary)",
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 12,
+              lineHeight: 1.5,
+              resize: "vertical",
+              clipPath: clipCorner(8),
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
         )}
 
         <div style={{ marginTop: 14 }}>

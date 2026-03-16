@@ -9,11 +9,12 @@ import Memory from "./pages/Memory";
 import Tools from "./pages/Tools";
 import Status from "./pages/Status";
 import Admin from "./pages/Admin";
+import Identity from "./pages/Identity";
 import { useToast } from "./hooks/useToast";
 import { getToken, setToken, restoreToken, listInstances } from "./api";
 import type { InstanceInfo } from "./api";
 
-export type View = "chat" | "config" | "memory" | "tools" | "status" | "admin";
+export type View = "chat" | "config" | "memory" | "tools" | "identity" | "status" | "admin";
 
 export function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -112,6 +113,8 @@ export function App() {
         return <Memory instanceId={currentInstance} toast={showToast} />;
       case "tools":
         return <Tools instanceId={currentInstance} toast={showToast} />;
+      case "identity":
+        return <Identity instanceId={currentInstance} toast={showToast} />;
       case "status":
         return (
           <Status

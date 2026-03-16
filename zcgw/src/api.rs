@@ -389,6 +389,178 @@ pub async fn forget_memory(
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
+// ---------- Identity Files ----------
+
+/// Well-known identity markdown files that ZeroClaw agents load from their workspace.
+const KNOWN_IDENTITY_FILES: &[&str] = &[
+    "SOUL.md",
+    "IDENTITY.md",
+    "AGENTS.md",
+    "TOOLS.md",
+    "USER.md",
+    "HEARTBEAT.md",
+    "BOOTSTRAP.md",
+    "MEMORY.md",
+];
+
+/// Resolve the agent workspace directory on the host filesystem.
+/// Inside the container: /data/.zeroclaw/workspace/
+/// On the host: <agents_dir>/<id>/data/.zeroclaw/workspace/
+fn agent_workspace_dir(state: &AppState, id: &str) -> std::path::PathBuf {
+    state
+        .docker_config
+        .agents_dir
+        .join(id)
+        .join("data")
+        .join(".zeroclaw")
+        .join("workspace")
+}
+
+#[derive(Serialize)]
+struct IdentityFile {
+    filename: String,
+    content: String,
+}
+
+pub async fn list_identity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let data_dir = agent_workspace_dir(&state, &id);
+    if !data_dir.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let mut files: Vec<IdentityFile> = Vec::new();
+
+    // Read all .md files in the data directory
+    let mut entries = tokio::fs::read_dir(&data_dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".md") {
+            if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
+                files.push(IdentityFile {
+                    filename: name,
+                    content,
+                });
+            }
+        }
+    }
+
+    // Sort: known files first (in canonical order), then custom files alphabetically
+    files.sort_by(|a, b| {
+        let a_idx = KNOWN_IDENTITY_FILES.iter().position(|f| *f == a.filename);
+        let b_idx = KNOWN_IDENTITY_FILES.iter().position(|f| *f == b.filename);
+        match (a_idx, b_idx) {
+            (Some(ai), Some(bi)) => ai.cmp(&bi),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.filename.cmp(&b.filename),
+        }
+    });
+
+    Ok(Json(serde_json::json!({
+        "files": files,
+        "known_files": KNOWN_IDENTITY_FILES,
+    })))
+}
+
+pub async fn get_identity_file(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !filename.ends_with(".md") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let path = agent_workspace_dir(&state, &id).join(&filename);
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({ "filename": filename, "content": content })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateIdentityBody {
+    content: String,
+}
+
+pub async fn update_identity_file(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(String, String)>,
+    Json(body): Json<UpdateIdentityBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !filename.ends_with(".md") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let data_dir = agent_workspace_dir(&state, &id);
+    tokio::fs::create_dir_all(&data_dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = data_dir.join(&filename);
+    tokio::fs::write(&path, &body.content)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn delete_identity_file(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !filename.ends_with(".md") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let path = agent_workspace_dir(&state, &id).join(&filename);
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct BatchIdentityBody {
+    files: Vec<BatchIdentityFile>,
+}
+
+#[derive(Deserialize)]
+struct BatchIdentityFile {
+    filename: String,
+    content: String,
+}
+
+pub async fn batch_update_identity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<BatchIdentityBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let data_dir = agent_workspace_dir(&state, &id);
+    tokio::fs::create_dir_all(&data_dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut saved = 0;
+    for file in &body.files {
+        if !file.filename.ends_with(".md") {
+            continue;
+        }
+        let path = data_dir.join(&file.filename);
+        if file.content.is_empty() {
+            // Delete empty files
+            let _ = tokio::fs::remove_file(&path).await;
+        } else {
+            tokio::fs::write(&path, &file.content)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            saved += 1;
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true, "saved": saved })))
+}
+
 // ---------- Chat (non-streaming REST) ----------
 
 #[derive(Deserialize)]

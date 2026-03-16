@@ -185,6 +185,38 @@ export const instanceAction = (
 
 export const getAgentTemplate = () => api<{ raw: string }>("/api/admin/template");
 
+// ── Identity ──
+export interface IdentityFile {
+  filename: string;
+  content: string;
+}
+
+export interface IdentityListResponse {
+  files: IdentityFile[];
+  known_files: string[];
+}
+
+export const listIdentity = (id: string) =>
+  api<IdentityListResponse>(`/api/instances/${encodeURIComponent(id)}/identity`);
+
+export const updateIdentityFile = (id: string, filename: string, content: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/identity/${encodeURIComponent(filename)}`,
+    { method: "PUT", body: JSON.stringify({ content }) },
+  );
+
+export const deleteIdentityFile = (id: string, filename: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/identity/${encodeURIComponent(filename)}`,
+    { method: "DELETE" },
+  );
+
+export const batchUpdateIdentity = (id: string, files: IdentityFile[]) =>
+  api<{ ok: boolean; saved: number }>(
+    `/api/instances/${encodeURIComponent(id)}/identity`,
+    { method: "PUT", body: JSON.stringify({ files }) },
+  );
+
 // ── WebSocket ──
 export function connectChat(instanceId: string): WebSocket {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";

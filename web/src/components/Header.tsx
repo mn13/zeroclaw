@@ -10,6 +10,7 @@ const viewTitles: Record<View, string> = {
   config: "CONFIGURATION",
   memory: "MEMORY",
   tools: "TOOLS",
+  identity: "IDENTITY",
   status: "STATUS",
   admin: "ADMIN PANEL",
 };

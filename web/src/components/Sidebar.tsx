@@ -20,6 +20,7 @@ const navItems: { key: View; icon: string; label: string }[] = [
   { key: "config", icon: "\u2699", label: "CONFIG" },
   { key: "memory", icon: "\u25C7", label: "MEMORY" },
   { key: "tools", icon: "\u25A4", label: "TOOLS" },
+  { key: "identity", icon: "\u2662", label: "IDENTITY" },
   { key: "status", icon: "\u25CB", label: "STATUS" },
 ];
 

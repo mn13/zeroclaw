@@ -198,6 +198,17 @@ fn build_router(state: AppState) -> Router {
             delete(api::forget_memory),
         )
         .route("/api/instances/{id}/chat", post(api::chat))
+        // Identity files
+        .route(
+            "/api/instances/{id}/identity",
+            get(api::list_identity).put(api::batch_update_identity),
+        )
+        .route(
+            "/api/instances/{id}/identity/{filename}",
+            get(api::get_identity_file)
+                .put(api::update_identity_file)
+                .delete(api::delete_identity_file),
+        )
         .route("/ws/chat", get(ws::ws_chat))
         // Admin endpoints
         .route("/api/admin/stats", get(admin::stats))
