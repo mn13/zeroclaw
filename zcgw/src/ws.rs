@@ -25,7 +25,7 @@ pub async fn ws_chat(
     Query(q): Query<WsChatQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     // Verify instance exists
-    if !state.registry.instances().contains_key(&q.instance) {
+    if !state.registry.instances().await.contains_key(&q.instance) {
         return Err(StatusCode::NOT_FOUND);
     }
 

@@ -37,9 +37,8 @@ struct InstanceInfo {
 
 pub async fn list_instances(State(state): State<AppState>) -> impl IntoResponse {
     let health = state.registry.all_health().await;
-    let mut instances: Vec<InstanceInfo> = state
-        .registry
-        .instances()
+    let instance_map = state.registry.instances().await;
+    let mut instances: Vec<InstanceInfo> = instance_map
         .iter()
         .map(|(id, cfg)| InstanceInfo {
             id: id.clone(),

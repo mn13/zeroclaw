@@ -11,6 +11,7 @@ const viewTitles: Record<View, string> = {
   memory: "MEMORY",
   tools: "TOOLS",
   status: "STATUS",
+  admin: "ADMIN PANEL",
 };
 
 export function Header({ view }: HeaderProps) {

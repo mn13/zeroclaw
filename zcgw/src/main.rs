@@ -1,7 +1,9 @@
+mod admin;
 mod api;
 mod app_state;
 mod auth;
 mod config;
+mod docker;
 mod registry;
 mod static_files;
 mod ws;
@@ -19,18 +21,52 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file FIRST, before anything else reads env vars.
+    // Try ZCGW_ENV_FILE, then docker/.env, then .env
+    // Process env vars always take precedence over .env file values.
+    let env_file_path = std::env::var("ZCGW_ENV_FILE").ok().or_else(|| {
+        for candidate in &["docker/.env", ".env"] {
+            if std::path::Path::new(candidate).exists() {
+                return Some(candidate.to_string());
+            }
+        }
+        None
+    });
+    if let Some(ref env_path) = env_file_path {
+        if let Ok(content) = std::fs::read_to_string(env_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, val)) = trimmed.split_once('=') {
+                    let key = key.trim();
+                    let val = val.trim();
+                    if std::env::var(key).is_err() {
+                        std::env::set_var(key, val);
+                    }
+                }
+            }
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    if let Some(ref env_path) = env_file_path {
+        info!(path = %env_path, "loaded env file");
+    }
 
     // Load config
     let config_path =
@@ -45,10 +81,79 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("ZCGW_AUTH_TOKEN not set — API endpoints are unprotected");
     }
 
+    // Load docker config from env vars
+    let mut docker_env_vars: HashMap<String, String> = std::env::var("ZCGW_DOCKER_ENV_VARS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next()?.to_string();
+            let val = parts.next()?.to_string();
+            Some((key, val))
+        })
+        .collect();
+
+    // Auto-forward well-known API key env vars to new containers
+    for key in &[
+        "VENICE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ] {
+        if !docker_env_vars.contains_key(*key) {
+            if let Ok(val) = std::env::var(key) {
+                if !val.is_empty() {
+                    docker_env_vars.insert(key.to_string(), val);
+                }
+            }
+        }
+    }
+
+    // host_mode: true when gateway runs outside Docker (no Docker socket container)
+    let host_mode = std::env::var("ZCGW_HOST_MODE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true); // default true for local dev
+
+    let agents_dir = std::env::var("ZCGW_AGENTS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("docker/agents"));
+
+    let base_port: u16 = std::env::var("ZCGW_BASE_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50051);
+
+    let docker_config = docker::DockerConfig {
+        image: std::env::var("ZCGW_DOCKER_IMAGE").unwrap_or_else(|_| "zeroclaw:latest".into()),
+        network: std::env::var("ZCGW_DOCKER_NETWORK")
+            .unwrap_or_else(|_| "zeroclaw-net".into()),
+        grpc_port: std::env::var("ZCGW_DOCKER_GRPC_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(50051),
+        memory_limit: std::env::var("ZCGW_DOCKER_MEMORY_LIMIT")
+            .unwrap_or_else(|_| "512m".into()),
+        env_vars: docker_env_vars,
+        config_template_path: std::env::var("ZCGW_DOCKER_CONFIG_TEMPLATE")
+            .unwrap_or_default(),
+        host_mode,
+        agents_dir,
+        base_port,
+    };
+
+    // Ensure agents directory exists
+    tokio::fs::create_dir_all(&docker_config.agents_dir).await?;
+
     let registry = Arc::new(registry::InstanceRegistry::new(
         config.instances.clone(),
         grpc_secret.clone(),
     ));
+
+    // Auto-start stopped agent containers on boot
+    let instance_ids: Vec<String> = config.instances.keys().cloned().collect();
+    docker::ensure_agents_running(&instance_ids).await;
+
     registry.spawn_health_loop();
 
     let state = AppState {
@@ -56,6 +161,8 @@ async fn main() -> anyhow::Result<()> {
         auth_token,
         grpc_secret,
         started_at: chrono::Utc::now(),
+        config_path,
+        docker_config,
     };
 
     let app = build_router(state);
@@ -91,7 +198,18 @@ fn build_router(state: AppState) -> Router {
             delete(api::forget_memory),
         )
         .route("/api/instances/{id}/chat", post(api::chat))
-        .route("/ws/chat", get(ws::ws_chat));
+        .route("/ws/chat", get(ws::ws_chat))
+        // Admin endpoints
+        .route("/api/admin/stats", get(admin::stats))
+        .route("/api/admin/config", get(admin::get_config))
+        .route("/api/admin/config", put(admin::update_config))
+        .route("/api/admin/instances", get(admin::list_instances))
+        .route("/api/admin/instances", post(admin::create_instance))
+        .route(
+            "/api/admin/instances/{id}/action",
+            post(admin::instance_action),
+        )
+        .route("/api/admin/template", get(admin::get_template));
 
     let spa = Router::new().fallback(static_files::static_handler);
 

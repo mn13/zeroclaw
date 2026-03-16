@@ -9,7 +9,7 @@ function saveCookie(token: string) {
 
 function loadCookie(): string {
   const match = document.cookie.match(/(?:^|;\s*)zc_token=([^;]*)/);
-  return match ? decodeURIComponent(match[1]) : "";
+  return match?.[1] ? decodeURIComponent(match[1]) : "";
 }
 
 export function setToken(t: string) {
@@ -140,6 +140,50 @@ export const forgetMemory = (id: string, key: string) =>
     `/api/instances/${encodeURIComponent(id)}/memory/${encodeURIComponent(key)}`,
     { method: "DELETE" },
   );
+
+// ── Admin ──
+export interface AdminStats {
+  uptime_secs: number;
+  started_at: string;
+  total_instances: number;
+  healthy_count: number;
+  unhealthy_count: number;
+}
+
+export interface DetailedInstance extends InstanceInfo {
+  container_status?: string;
+}
+
+export const getAdminStats = () => api<AdminStats>("/api/admin/stats");
+
+export const getAdminConfig = () => api<{ raw: string }>("/api/admin/config");
+
+export const updateAdminConfig = (raw: string) =>
+  api<{ requires_restart: boolean }>("/api/admin/config", {
+    method: "PUT",
+    body: JSON.stringify({ raw }),
+  });
+
+export const listAdminInstances = () =>
+  api<DetailedInstance[]>("/api/admin/instances");
+
+export const createInstance = (id: string, display_name: string, config_toml: string) =>
+  api<DetailedInstance>("/api/admin/instances", {
+    method: "POST",
+    body: JSON.stringify({ id, display_name, config_toml }),
+  });
+
+export const instanceAction = (
+  id: string,
+  action: "start" | "stop" | "destroy" | "reconnect",
+  confirm?: boolean,
+) =>
+  api<{ ok: boolean }>(`/api/admin/instances/${encodeURIComponent(id)}/action`, {
+    method: "POST",
+    body: JSON.stringify({ action, confirm }),
+  });
+
+export const getAgentTemplate = () => api<{ raw: string }>("/api/admin/template");
 
 // ── WebSocket ──
 export function connectChat(instanceId: string): WebSocket {

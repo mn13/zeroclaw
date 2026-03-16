@@ -9,22 +9,34 @@ services:
       ZCGW_AUTH_TOKEN: "${ZCGW_AUTH_TOKEN:-test-token-123}"
       ZCGW_GRPC_SECRET: "${ZCGW_GRPC_SECRET:-grpc-secret-456}"
       ZCGW_CONFIG_PATH: /etc/zcgw/config.toml
+      ZCGW_DOCKER_IMAGE: zeroclaw-agent
+      ZCGW_DOCKER_NETWORK: "${ZCGW_DOCKER_NETWORK:-docker_default}"
+      ZCGW_DOCKER_CONFIG_TEMPLATE: /etc/zcgw/zc-template.toml
+      ZCGW_HOST_MODE: "false"
+      ZCGW_AGENTS_DIR: /var/lib/zcgw/agents
+      ZCGW_BASE_PORT: "50051"
+      VENICE_API_KEY: "${VENICE_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
-      - ./config/zcgw.toml:/etc/zcgw/config.toml:ro
+      - ./config/zcgw.toml:/etc/zcgw/config.toml
+      - ./config/zc-venice.toml:/etc/zcgw/zc-template.toml:ro
+      - ./agents:/var/lib/zcgw/agents
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
-      - zc-1
-      - zc-2
+      - ava
     deploy:
       resources:
         limits:
           memory: 256M
 
-  zc-1:
+  ava:
+    image: zeroclaw-agent
     build:
       context: ..
       dockerfile: docker/Dockerfile.zc
     volumes:
-      - zc-1-data:/data
+      - ./agents/ava/data:/data
       - ./config/zc-venice.toml:/etc/zc/config.toml:ro
     environment:
       ZC_GRPC_PORT: "50051"
@@ -32,29 +44,12 @@ services:
       VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    labels:
+      zeroclaw.role: agent
+      zeroclaw.instance: ava
+    ports:
+      - "50051:50051"
     deploy:
       resources:
         limits:
           memory: 1G
-
-  zc-2:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.zc
-    volumes:
-      - zc-2-data:/data
-      - ./config/zc-venice.toml:/etc/zc/config.toml:ro
-    environment:
-      ZC_GRPC_PORT: "50051"
-      ZC_DATA_DIR: "/data"
-      VENICE_API_KEY: "${VENICE_API_KEY:-}"
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-
-volumes:
-  zc-1-data:
-  zc-2-data:

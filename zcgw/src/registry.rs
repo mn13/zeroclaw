@@ -25,9 +25,10 @@ impl serde::Serialize for InstanceHealth {
 }
 
 pub struct InstanceRegistry {
-    instances: HashMap<String, InstanceConfig>,
+    instances: RwLock<HashMap<String, InstanceConfig>>,
     clients: RwLock<HashMap<String, ClawAgentClient<Channel>>>,
     health: RwLock<HashMap<String, InstanceHealth>>,
+    #[allow(dead_code)]
     grpc_secret: String,
 }
 
@@ -38,21 +39,23 @@ impl InstanceRegistry {
             .map(|k| (k.clone(), InstanceHealth::Unknown))
             .collect();
         Self {
-            instances,
+            instances: RwLock::new(instances),
             clients: RwLock::new(HashMap::new()),
             health: RwLock::new(health),
             grpc_secret,
         }
     }
 
-    pub fn instances(&self) -> &HashMap<String, InstanceConfig> {
-        &self.instances
+    pub async fn instances(&self) -> HashMap<String, InstanceConfig> {
+        self.instances.read().await.clone()
     }
 
+    #[allow(dead_code)]
     pub fn grpc_secret(&self) -> &str {
         &self.grpc_secret
     }
 
+    #[allow(dead_code)]
     pub async fn get_health(&self, id: &str) -> InstanceHealth {
         self.health
             .read()
@@ -78,11 +81,14 @@ impl InstanceRegistry {
             }
         }
 
-        // Create new connection
-        let config = self
-            .instances
-            .get(instance_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown instance: {}", instance_id))?;
+        // Create new connection — acquire read lock on instances for lookup
+        let config = {
+            let instances = self.instances.read().await;
+            instances
+                .get(instance_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("unknown instance: {}", instance_id))?
+        };
 
         let addr = if config.grpc_address.starts_with("http") {
             config.grpc_address.clone()
@@ -105,8 +111,86 @@ impl InstanceRegistry {
         clients.remove(instance_id);
     }
 
+    pub async fn add_instance(&self, id: String, config: InstanceConfig) {
+        let mut instances = self.instances.write().await;
+        instances.insert(id.clone(), config);
+        let mut health = self.health.write().await;
+        health.insert(id, InstanceHealth::Unknown);
+    }
+
+    pub async fn remove_instance(&self, id: &str) {
+        let mut instances = self.instances.write().await;
+        instances.remove(id);
+        let mut health = self.health.write().await;
+        health.remove(id);
+        let mut clients = self.clients.write().await;
+        clients.remove(id);
+    }
+
+    /// Returns (total, healthy, unhealthy) counts.
+    pub async fn instance_count(&self) -> (usize, usize, usize) {
+        let instances = self.instances.read().await;
+        let health = self.health.read().await;
+        let total = instances.len();
+        let healthy = health
+            .values()
+            .filter(|h| **h == InstanceHealth::Healthy)
+            .count();
+        let unhealthy = health
+            .values()
+            .filter(|h| **h == InstanceHealth::Unhealthy)
+            .count();
+        (total, healthy, unhealthy)
+    }
+
+    /// Check health for a single instance (with retries for newly started containers).
+    pub async fn check_health_one(&self, id: &str) {
+        // Retry a few times — new containers need a moment to start gRPC
+        for attempt in 0..5 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+
+            // Invalidate client so we get a fresh connection
+            self.invalidate_client(id).await;
+
+            let healthy = match self.get_client(id).await {
+                Ok(mut client) => {
+                    let req = tonic::Request::new(crate::proto::HealthCheckRequest {});
+                    match client.health_check(req).await {
+                        Ok(resp) => resp.into_inner().healthy,
+                        Err(_) => false,
+                    }
+                }
+                Err(_) => false,
+            };
+
+            let status = if healthy {
+                InstanceHealth::Healthy
+            } else {
+                InstanceHealth::Unhealthy
+            };
+
+            let mut health = self.health.write().await;
+            health.insert(id.to_string(), status.clone());
+            drop(health);
+
+            if status == InstanceHealth::Healthy {
+                info!(instance = %id, attempt, "health check passed");
+                return;
+            }
+        }
+        warn!(instance = %id, "health check failed after retries");
+    }
+
     pub async fn check_health_all(&self) {
-        for (id, _config) in &self.instances {
+        // Clone instance list to avoid holding the lock during health checks.
+        let instance_list: Vec<String> = {
+            let instances = self.instances.read().await;
+            instances.keys().cloned().collect()
+        };
+
+        for id in &instance_list {
             let healthy = match self.get_client(id).await {
                 Ok(mut client) => {
                     let req = tonic::Request::new(crate::proto::HealthCheckRequest {});

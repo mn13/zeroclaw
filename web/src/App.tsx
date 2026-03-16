@@ -8,11 +8,12 @@ import Config from "./pages/Config";
 import Memory from "./pages/Memory";
 import Tools from "./pages/Tools";
 import Status from "./pages/Status";
+import Admin from "./pages/Admin";
 import { useToast } from "./hooks/useToast";
 import { getToken, setToken, restoreToken, listInstances } from "./api";
 import type { InstanceInfo } from "./api";
 
-export type View = "chat" | "config" | "memory" | "tools" | "status";
+export type View = "chat" | "config" | "memory" | "tools" | "status" | "admin";
 
 export function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -70,6 +71,12 @@ export function App() {
     setCurrentInstance("");
   }, []);
 
+  const refreshInstances = useCallback(() => {
+    listInstances()
+      .then(setInstances)
+      .catch((err) => showToast(err instanceof Error ? err.message : "Failed to refresh instances", true));
+  }, [showToast]);
+
   if (!loggedIn || !getToken()) {
     return (
       <div style={{ display: "flex", height: "100vh" }}>
@@ -113,6 +120,8 @@ export function App() {
             onLogout={handleLogout}
           />
         );
+      case "admin":
+        return <Admin toast={showToast} instances={instances} onInstancesChange={refreshInstances} />;
     }
   };
 
@@ -132,7 +141,7 @@ export function App() {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <Header view={view} />
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {currentInstance ? (
+          {(currentInstance || view === "admin") ? (
             renderView()
           ) : (
             <div

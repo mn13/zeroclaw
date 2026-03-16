@@ -40,11 +40,15 @@ function InstanceSelector({
   currentInstance,
   onInstanceChange,
   expanded,
+  view,
+  onViewChange,
 }: {
   instances: InstanceInfo[];
   currentInstance: string;
   onInstanceChange: (id: string) => void;
   expanded: boolean;
+  view: View;
+  onViewChange: (v: View) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -257,6 +261,57 @@ function InstanceSelector({
               </button>
             );
           })}
+          {/* Divider */}
+          <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
+          {/* Admin section */}
+          <div
+            style={{
+              padding: "8px 10px 4px",
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 9,
+              color: "var(--text-dim)",
+              letterSpacing: 1,
+              textTransform: "uppercase",
+            }}
+          >
+            ADMIN
+          </div>
+          <button
+            onClick={() => {
+              onViewChange("admin");
+              setOpen(false);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              padding: "8px 10px",
+              background: view === "admin" ? "var(--amber-glow)" : "transparent",
+              border: "none",
+              cursor: "pointer",
+              transition: "background 0.1s",
+            }}
+            onMouseEnter={(e) => {
+              if (view !== "admin") e.currentTarget.style.background = "var(--dropdown-hover)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = view === "admin" ? "var(--amber-glow)" : "transparent";
+            }}
+          >
+            <span style={{ fontSize: 14, minWidth: 8 }}>⚙</span>
+            <span
+              style={{
+                fontFamily: "'Outfit', sans-serif",
+                fontSize: 12,
+                fontWeight: view === "admin" ? 600 : 400,
+                color: view === "admin" ? "var(--amber)" : "var(--text-primary)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Admin Panel
+            </span>
+          </button>
         </div>
       )}
     </div>
@@ -401,6 +456,8 @@ export function Sidebar({
         currentInstance={currentInstance}
         onInstanceChange={onInstanceChange}
         expanded={expanded}
+        view={view}
+        onViewChange={onViewChange}
       />
 
       {/* Health status */}

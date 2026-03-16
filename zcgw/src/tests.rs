@@ -28,6 +28,34 @@ listen_addr = "0.0.0.0:8080"
     assert!(result.is_err());
 }
 
+#[test]
+fn test_config_round_trip() {
+    let toml_str = r#"
+listen_addr = "0.0.0.0:8080"
+
+[instances.zc-1]
+grpc_address = "localhost:50051"
+display_name = "Agent One"
+
+[instances.zc-2]
+grpc_address = "localhost:50052"
+display_name = "Agent Two"
+"#;
+    let config: GatewayConfig = toml::from_str(toml_str).unwrap();
+    let serialized = toml::to_string_pretty(&config).unwrap();
+    let deserialized: GatewayConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(deserialized.listen_addr, config.listen_addr);
+    assert_eq!(deserialized.instances.len(), config.instances.len());
+    assert_eq!(
+        deserialized.instances["zc-1"].grpc_address,
+        config.instances["zc-1"].grpc_address
+    );
+    assert_eq!(
+        deserialized.instances["zc-2"].display_name,
+        config.instances["zc-2"].display_name
+    );
+}
+
 // Auth tests
 mod auth_tests {
     use axum::body::Body;

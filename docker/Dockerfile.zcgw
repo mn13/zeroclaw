@@ -17,11 +17,11 @@ RUN cargo build -p zcgw --profile ci && \
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates docker.io && \
     rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system zcgw && \
-    useradd --system --gid zcgw --create-home zcgw
+    useradd --system --gid zcgw --groups docker --create-home zcgw
 
 COPY --from=builder /usr/local/bin/zcgw /usr/local/bin/zcgw
 

@@ -7,4 +7,6 @@ pub struct AppState {
     pub auth_token: String,
     pub grpc_secret: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    pub config_path: String,
+    pub docker_config: crate::docker::DockerConfig,
 }

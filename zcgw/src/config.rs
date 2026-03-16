@@ -1,13 +1,13 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
     pub listen_addr: String,
     pub instances: HashMap<String, InstanceConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InstanceConfig {
     pub grpc_address: String,
     pub display_name: String,
@@ -18,6 +18,12 @@ impl GatewayConfig {
         let content = std::fs::read_to_string(path)?;
         let config: GatewayConfig = toml::from_str(&content)?;
         Ok(config)
+    }
+
+    pub fn save(&self, path: &str) -> anyhow::Result<()> {
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
     }
 }
 
