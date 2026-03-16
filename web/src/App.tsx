@@ -9,7 +9,7 @@ import Memory from "./pages/Memory";
 import Tools from "./pages/Tools";
 import Status from "./pages/Status";
 import { useToast } from "./hooks/useToast";
-import { getToken, setToken, listInstances } from "./api";
+import { getToken, setToken, restoreToken, listInstances } from "./api";
 import type { InstanceInfo } from "./api";
 
 export type View = "chat" | "config" | "memory" | "tools" | "status";
@@ -23,16 +23,18 @@ export function App() {
   const { toast, show: showToast } = useToast();
   const autoLoginAttempted = useRef(false);
 
-  // Auto-login from ?token= URL parameter
+  // Auto-login from ?token= URL parameter or saved cookie
   useEffect(() => {
     if (autoLoginAttempted.current || loggedIn) return;
     autoLoginAttempted.current = true;
 
     const params = new URLSearchParams(window.location.search);
     const urlToken = params.get("token");
-    if (!urlToken) return;
+    const savedToken = restoreToken();
+    const token = urlToken || savedToken;
+    if (!token) return;
 
-    setToken(urlToken);
+    setToken(token);
     listInstances()
       .then((insts) => {
         setLoggedIn(true);
@@ -41,9 +43,11 @@ export function App() {
           setCurrentInstance(insts[0].id);
         }
         // Clean the token from the URL
-        const url = new URL(window.location.href);
-        url.searchParams.delete("token");
-        window.history.replaceState({}, "", url.toString());
+        if (urlToken) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("token");
+          window.history.replaceState({}, "", url.toString());
+        }
       })
       .catch(() => {
         // Token invalid, fall back to manual login
@@ -60,6 +64,7 @@ export function App() {
   }, []);
 
   const handleLogout = useCallback(() => {
+    setToken("");
     setLoggedIn(false);
     setInstances([]);
     setCurrentInstance("");

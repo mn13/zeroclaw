@@ -2,11 +2,29 @@
 
 let _token = "";
 
+function saveCookie(token: string) {
+  const maxAge = token ? 86400 * 30 : 0; // 30 days, or expire immediately
+  document.cookie = `zc_token=${encodeURIComponent(token)}; path=/; max-age=${maxAge}; SameSite=Strict`;
+}
+
+function loadCookie(): string {
+  const match = document.cookie.match(/(?:^|;\s*)zc_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
 export function setToken(t: string) {
   _token = t;
+  saveCookie(t);
 }
+
 export function getToken() {
   return _token;
+}
+
+export function restoreToken(): string {
+  const saved = loadCookie();
+  if (saved) _token = saved;
+  return saved;
 }
 
 function headers(): Record<string, string> {
