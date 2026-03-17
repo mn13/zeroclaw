@@ -4,13 +4,38 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
     pub listen_addr: String,
+    #[serde(default)]
     pub instances: HashMap<String, InstanceConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DesiredState {
+    Running,
+    Stopped,
+}
+
+impl Default for DesiredState {
+    fn default() -> Self {
+        DesiredState::Running
+    }
+}
+
+impl std::fmt::Display for DesiredState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DesiredState::Running => write!(f, "running"),
+            DesiredState::Stopped => write!(f, "stopped"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InstanceConfig {
     pub grpc_address: String,
     pub display_name: String,
+    #[serde(default)]
+    pub desired_state: DesiredState,
 }
 
 impl GatewayConfig {
@@ -63,6 +88,16 @@ listen_addr = "127.0.0.1:9090"
 "#;
         let config: GatewayConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.listen_addr, "127.0.0.1:9090");
+        assert!(config.instances.is_empty());
+    }
+
+    #[test]
+    fn test_parse_no_instances_section() {
+        let toml_str = r#"
+listen_addr = "0.0.0.0:8080"
+"#;
+        let config: GatewayConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.listen_addr, "0.0.0.0:8080");
         assert!(config.instances.is_empty());
     }
 }

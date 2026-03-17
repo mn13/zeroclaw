@@ -1948,6 +1948,7 @@ pub(crate) async fn agent_turn(
     silent: bool,
     multimodal_config: &crate::config::MultimodalConfig,
     max_tool_iterations: usize,
+    on_delta: Option<tokio::sync::mpsc::Sender<String>>,
 ) -> Result<(String, u64, u64)> {
     run_tool_call_loop(
         provider,
@@ -1963,7 +1964,7 @@ pub(crate) async fn agent_turn(
         multimodal_config,
         max_tool_iterations,
         None,
-        None,
+        on_delta,
         None,
         &[],
         &[],
@@ -3314,7 +3315,11 @@ pub async fn run(
 
 /// Process a single message through the full agent (with tools, peripherals, memory).
 /// Used by channels (Telegram, Discord, etc.) to enable hardware and tool use.
-pub async fn process_message(config: Config, message: &str) -> Result<(String, u64, u64)> {
+pub async fn process_message(
+    config: Config,
+    message: &str,
+    on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+) -> Result<(String, u64, u64)> {
     let observer: Arc<dyn Observer> =
         Arc::from(observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -3493,6 +3498,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<(String, u
         true,
         &config.multimodal,
         config.agent.max_tool_iterations,
+        on_delta,
     )
     .await
 }

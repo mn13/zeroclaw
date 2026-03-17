@@ -39,6 +39,8 @@ pub enum AgentResponse {
     TurnStarted {
         turn_index: u64,
     },
+    /// A streaming text delta from the agent.
+    Delta(String),
 }
 
 /// An event broadcast to all subscribers (for the SubscribeEvents RPC).
@@ -50,8 +52,14 @@ pub struct AgentBroadcastEvent {
 }
 
 /// Type alias for the async message handler function.
+/// Accepts the enriched message and an optional delta sender for streaming.
 pub type MessageHandler = Box<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(String, u64, u64)>> + Send>> + Send + Sync,
+    dyn Fn(
+            String,
+            Option<mpsc::Sender<String>>,
+        ) -> Pin<Box<dyn Future<Output = Result<(String, u64, u64)>> + Send>>
+        + Send
+        + Sync,
 >;
 
 /// Manages a single agent session: owns the history store, coordinates the
@@ -73,13 +81,20 @@ impl SessionManager {
         let shared_config = Arc::new(RwLock::new(config));
         let handler: MessageHandler = {
             let cfg = shared_config.clone();
-            Box::new(move |enriched_message: String| {
-                let c = cfg.clone();
-                Box::pin(async move {
-                    let config_snapshot = c.read().await.clone();
-                    crate::agent::process_message(config_snapshot, &enriched_message).await
-                })
-            })
+            Box::new(
+                move |enriched_message: String, on_delta: Option<mpsc::Sender<String>>| {
+                    let c = cfg.clone();
+                    Box::pin(async move {
+                        let config_snapshot = c.read().await.clone();
+                        crate::agent::process_message(
+                            config_snapshot,
+                            &enriched_message,
+                            on_delta,
+                        )
+                        .await
+                    })
+                },
+            )
         };
         Self::new_with_handler_and_config(shared_config, data_dir, handler)
     }
@@ -183,8 +198,24 @@ async fn agent_actor_loop(
                     format!("{context_prefix}\n\nCurrent message: {message}")
                 };
 
+                // Set up a delta forwarding channel so streaming deltas reach
+                // the gRPC reply channel as AgentResponse::Delta.
+                let (delta_tx, mut delta_rx) = mpsc::channel::<String>(64);
+                let reply_for_deltas = reply.clone();
+                tokio::spawn(async move {
+                    while let Some(text) = delta_rx.recv().await {
+                        if reply_for_deltas
+                            .send(AgentResponse::Delta(text))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
                 // Call the message handler.
-                let result = handler(enriched_message).await;
+                let result = handler(enriched_message, Some(delta_tx)).await;
 
                 match result {
                     Ok((response, input_tokens, output_tokens)) => {

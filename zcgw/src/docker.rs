@@ -16,9 +16,15 @@ pub struct DockerConfig {
     /// mappings to reach agent containers. When false (gateway in Docker),
     /// agents are reached via container hostname on the Docker network.
     pub host_mode: bool,
-    /// Base directory for agent data. Each agent gets `<agents_dir>/<id>/`.
-    /// Contains config.toml and data/ subdirectory (bind-mounted into container).
+    /// Base directory for agent data (gateway-local path).
+    /// Each agent gets `<agents_dir>/<id>/`.
+    /// Contains config.toml and data/ subdirectory.
     pub agents_dir: PathBuf,
+    /// Host-side path to the agents directory, used for `docker run -v` bind mounts.
+    /// When the gateway runs inside Docker, `agents_dir` is the container-internal
+    /// path while `host_agents_dir` is the actual host filesystem path.
+    /// When running on the host directly, this equals `agents_dir`.
+    pub host_agents_dir: PathBuf,
     /// Base port for sequential host port assignment (default: 50051).
     pub base_port: u16,
 }
@@ -42,6 +48,7 @@ impl Default for DockerConfig {
             config_template_path: String::new(),
             host_mode: false,
             agents_dir: PathBuf::from("docker/agents"),
+            host_agents_dir: PathBuf::from("docker/agents"),
             base_port: 50051,
         }
     }
@@ -159,9 +166,10 @@ pub fn port_from_address(addr: &str) -> Option<u16> {
 async fn setup_agent_dir(agents_dir: &Path, id: &str, config_toml: &str) -> anyhow::Result<PathBuf> {
     let agent_dir = agents_dir.join(id);
     let data_dir = agent_dir.join("data");
+    let zc_dir = data_dir.join(".zeroclaw").join("workspace");
     let config_path = agent_dir.join("config.toml");
 
-    tokio::fs::create_dir_all(&data_dir).await?;
+    tokio::fs::create_dir_all(&zc_dir).await?;
     tokio::fs::write(&config_path, config_toml).await?;
     debug!(path = %agent_dir.display(), "set up agent directory");
 
@@ -178,13 +186,12 @@ pub async fn create_agent(
     let container_name = id.to_string();
 
     // Set up agent directory with config and data
-    let agent_dir = setup_agent_dir(&docker_config.agents_dir, id, agent_config_toml).await?;
-    let config_path = agent_dir.join("config.toml");
-    let data_dir = agent_dir.join("data");
+    let _agent_dir = setup_agent_dir(&docker_config.agents_dir, id, agent_config_toml).await?;
 
-    // Use absolute paths for bind mounts
-    let config_abs = tokio::fs::canonicalize(&config_path).await?;
-    let data_abs = tokio::fs::canonicalize(&data_dir).await?;
+    // Use host-side paths for bind mounts (required when gateway runs inside Docker)
+    let host_agent_dir = docker_config.host_agents_dir.join(id);
+    let host_config = host_agent_dir.join("config.toml");
+    let host_data = host_agent_dir.join("data");
 
     let mut args = vec![
         "run".to_string(),
@@ -202,9 +209,9 @@ pub async fn create_agent(
         "--label".to_string(),
         format!("zeroclaw.instance={}", id),
         "-v".to_string(),
-        format!("{}:/data", data_abs.display()),
+        format!("{}:/data", host_data.display()),
         "-v".to_string(),
-        format!("{}:/etc/zc/config.toml:ro", config_abs.display()),
+        format!("{}:/etc/zc/config.toml:ro", host_config.display()),
     ];
 
     // Publish host port
@@ -372,33 +379,115 @@ pub async fn sync_agent_config(id: &str, agents_dir: &Path) {
     }
 }
 
-/// Ensure all registered agents have running containers.
-/// Syncs host configs and tries to start stopped containers.
-/// Skips agents without containers (e.g. compose-managed agents).
-pub async fn ensure_agents_running(instance_ids: &[String], agents_dir: &Path) {
-    for id in instance_ids {
-        // Always sync host config → data dir so the agent reads the latest config
-        sync_agent_config(id, agents_dir).await;
+/// Ensure all instances in the config have Docker containers matching their
+/// desired state. Creates missing containers, starts stopped ones (if desired
+/// state is "running"), and leaves stopped ones alone (if desired state is
+/// "stopped"). Updates grpc_address in config if a new container is created,
+/// then persists the config.
+pub async fn ensure_agents_from_config(
+    config: &mut crate::config::GatewayConfig,
+    config_path: &str,
+    docker_config: &DockerConfig,
+) {
+    let ids: Vec<String> = config.instances.keys().cloned().collect();
+    let mut config_changed = false;
+
+    // Collect used ports for sequential allocation.
+    let used_ports: Vec<u16> = config
+        .instances
+        .values()
+        .filter_map(|c| port_from_address(&c.grpc_address))
+        .collect();
+    let mut allocated_ports = used_ports;
+
+    for id in &ids {
+        let instance = match config.instances.get(id) {
+            Some(i) => i.clone(),
+            None => continue,
+        };
+
+        // Sync host config → data dir
+        sync_agent_config(id, &docker_config.agents_dir).await;
+
+        let desired = &instance.desired_state;
 
         match resolve_container(id).await {
             Ok(container) => {
-                // Check if it's running
+                // Container exists — check its state
                 let status = Command::new("docker")
                     .args(["inspect", "--format", "{{.State.Status}}", &container])
                     .output()
                     .await;
-                if let Ok(out) = status {
-                    let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if state != "running" {
-                        info!(id, state = %state, "starting stopped agent container");
+                let state = status
+                    .ok()
+                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                    .unwrap_or_default();
+
+                match desired {
+                    crate::config::DesiredState::Running if state != "running" => {
+                        info!(id = %id, state = %state, "starting agent container");
                         let _ = start_agent(id).await;
+                    }
+                    crate::config::DesiredState::Stopped if state == "running" => {
+                        info!(id = %id, "stopping agent container (desired: stopped)");
+                        let _ = stop_agent(id).await;
+                    }
+                    _ => {
+                        debug!(id = %id, state = %state, desired = %desired, "container state matches desired");
                     }
                 }
             }
             Err(_) => {
-                // No container exists — might be a compose-managed agent, skip
-                debug!(id, "no container found, skipping auto-start");
+                // No container exists
+                if *desired == crate::config::DesiredState::Stopped {
+                    debug!(id = %id, "no container, desired stopped — skipping");
+                    continue;
+                }
+
+                // Create the container
+                info!(id = %id, "creating missing agent container");
+
+                // Read agent config from the agents dir, or fall back to template
+                let agent_config_toml = {
+                    let host_config = docker_config.agents_dir.join(id).join("config.toml");
+                    if host_config.exists() {
+                        tokio::fs::read_to_string(&host_config)
+                            .await
+                            .unwrap_or_default()
+                    } else if !docker_config.config_template_path.is_empty() {
+                        tokio::fs::read_to_string(&docker_config.config_template_path)
+                            .await
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                };
+
+                let host_port = next_available_port(docker_config.base_port, &allocated_ports);
+                allocated_ports.push(host_port);
+
+                match create_agent(id, &agent_config_toml, host_port, docker_config).await {
+                    Ok(result) => {
+                        info!(id = %id, addr = %result.grpc_address, "created agent container");
+                        // Update grpc_address if it changed
+                        if let Some(inst) = config.instances.get_mut(id) {
+                            if inst.grpc_address != result.grpc_address {
+                                inst.grpc_address = result.grpc_address;
+                                config_changed = true;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(id = %id, error = %e, "failed to create agent container");
+                    }
+                }
             }
+        }
+    }
+
+    if config_changed {
+        if let Err(e) = config.save(config_path) {
+            warn!(error = %e, "failed to persist updated config");
         }
     }
 }

@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
     // Load config
     let config_path =
         std::env::var("ZCGW_CONFIG_PATH").unwrap_or_else(|_| "./zcgw.toml".to_string());
-    let config = config::GatewayConfig::load(&config_path)?;
+    let mut config = config::GatewayConfig::load(&config_path)?;
     info!(listen = %config.listen_addr, instances = config.instances.len(), "loaded config");
 
     let auth_token = std::env::var("ZCGW_AUTH_TOKEN").unwrap_or_default();
@@ -119,6 +119,12 @@ async fn main() -> anyhow::Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("docker/agents"));
 
+    // Host-side path for bind mounts (needed when gateway runs in Docker).
+    // Falls back to agents_dir for host-mode operation.
+    let host_agents_dir = std::env::var("ZCGW_HOST_AGENTS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| agents_dir.clone());
+
     let base_port: u16 = std::env::var("ZCGW_BASE_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -139,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_default(),
         host_mode,
         agents_dir,
+        host_agents_dir,
         base_port,
     };
 
@@ -150,9 +157,9 @@ async fn main() -> anyhow::Result<()> {
         grpc_secret.clone(),
     ));
 
-    // Sync configs and auto-start stopped agent containers on boot
-    let instance_ids: Vec<String> = config.instances.keys().cloned().collect();
-    docker::ensure_agents_running(&instance_ids, &docker_config.agents_dir).await;
+    // Ensure all configured instances have containers matching their desired state.
+    // This creates missing containers and starts/stops as needed.
+    docker::ensure_agents_from_config(&mut config, &config_path, &docker_config).await;
 
     registry.spawn_health_loop();
 

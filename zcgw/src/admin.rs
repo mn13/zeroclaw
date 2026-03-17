@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::config::{GatewayConfig, InstanceConfig};
+use crate::config::{DesiredState, GatewayConfig, InstanceConfig};
 use crate::docker;
 use axum::{
     extract::{Path, State},
@@ -9,6 +9,23 @@ use axum::{
 };
 use serde::Deserialize;
 use tracing::error;
+
+/// Persist the desired state of an instance to zcgw.toml.
+async fn persist_desired_state(
+    config_path: &str,
+    id: &str,
+    state: DesiredState,
+) -> Result<(), StatusCode> {
+    let mut gw_config =
+        GatewayConfig::load(config_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(instance) = gw_config.instances.get_mut(id) {
+        instance.desired_state = state;
+    }
+    gw_config
+        .save(config_path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
+}
 
 // ---------- Stats ----------
 
@@ -72,6 +89,7 @@ pub async fn list_instances(State(state): State<AppState>) -> impl IntoResponse 
             "grpc_address": cfg.grpc_address,
             "health": h,
             "container_status": container_status,
+            "desired_state": cfg.desired_state.to_string(),
         }));
     }
 
@@ -129,6 +147,7 @@ pub async fn create_instance(
     let config = InstanceConfig {
         grpc_address: result.grpc_address,
         display_name: body.display_name,
+        desired_state: DesiredState::Running,
     };
 
     // Add to registry
@@ -174,6 +193,7 @@ pub async fn instance_action(
                 error!(%id, error = %e, "start_agent failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+            persist_desired_state(&state.config_path, &id, DesiredState::Running).await?;
             true
         }
         "stop" => {
@@ -181,8 +201,8 @@ pub async fn instance_action(
                 error!(%id, error = %e, "stop_agent failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-            // Mark unhealthy immediately
             state.registry.invalidate_client(&id).await;
+            persist_desired_state(&state.config_path, &id, DesiredState::Stopped).await?;
             false
         }
         "destroy" => {
@@ -209,6 +229,7 @@ pub async fn instance_action(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
             state.registry.invalidate_client(&id).await;
+            persist_desired_state(&state.config_path, &id, DesiredState::Running).await?;
             true
         }
         "reconnect" => {

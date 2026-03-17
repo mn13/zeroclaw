@@ -14,6 +14,7 @@ services:
       ZCGW_DOCKER_CONFIG_TEMPLATE: /etc/zcgw/zc-template.toml
       ZCGW_HOST_MODE: "false"
       ZCGW_AGENTS_DIR: /var/lib/zcgw/agents
+      ZCGW_HOST_AGENTS_DIR: "${PWD}/agents"
       ZCGW_BASE_PORT: "50051"
       VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
@@ -23,33 +24,7 @@ services:
       - ./config/zc-venice.toml:/etc/zcgw/zc-template.toml:ro
       - ./agents:/var/lib/zcgw/agents
       - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - ava
     deploy:
       resources:
         limits:
           memory: 256M
-
-  ava:
-    image: zeroclaw-agent
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.zc
-    volumes:
-      - ./agents/ava/data:/data
-      - ./config/zc-venice.toml:/etc/zc/config.toml:ro
-    environment:
-      ZC_GRPC_PORT: "50051"
-      ZC_DATA_DIR: "/data"
-      VENICE_API_KEY: "${VENICE_API_KEY:-}"
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-    labels:
-      zeroclaw.role: agent
-      zeroclaw.instance: ava
-    ports:
-      - "50051:50051"
-    deploy:
-      resources:
-        limits:
-          memory: 1G

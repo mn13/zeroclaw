@@ -150,7 +150,9 @@ export function Chat({ instanceId, toast }: ChatProps) {
         case "done":
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === msg.turn_id ? { ...m, content: msg.content } : m,
+              m.id === msg.turn_id
+                ? { ...m, content: m.content || msg.content }
+                : m,
             ),
           );
           setStreaming(false);

@@ -20,12 +20,12 @@ display_name = "Agent Two"
 }
 
 #[test]
-fn test_config_missing_instances_fails() {
+fn test_config_missing_instances_defaults_to_empty() {
     let toml_str = r#"
 listen_addr = "0.0.0.0:8080"
 "#;
-    let result: Result<GatewayConfig, _> = toml::from_str(toml_str);
-    assert!(result.is_err());
+    let config: GatewayConfig = toml::from_str(toml_str).unwrap();
+    assert!(config.instances.is_empty());
 }
 
 #[test]

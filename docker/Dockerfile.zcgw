@@ -20,12 +20,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates docker.io && \
     rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --system zcgw && \
-    useradd --system --gid zcgw --groups docker --create-home zcgw
-
 COPY --from=builder /usr/local/bin/zcgw /usr/local/bin/zcgw
 
-USER zcgw
+# Run as root to access Docker socket (required for container management).
+# The gateway manages agent containers via the Docker API.
 EXPOSE 8080
 STOPSIGNAL SIGTERM
 

@@ -213,7 +213,7 @@ async fn grpc_roundtrip_memory_persistence() {
     let captured_clone = captured.clone();
 
     // Mock handler: echoes back a static response but captures the enriched message.
-    let handler: MessageHandler = Box::new(move |enriched: String| {
+    let handler: MessageHandler = Box::new(move |enriched: String, _on_delta| {
         let cap = captured_clone.clone();
         Box::pin(async move {
             cap.lock().unwrap().push(enriched);
@@ -322,7 +322,7 @@ async fn grpc_health_check() {
     use crate::serve::proto::claw_agent_server::ClawAgentServer;
     use crate::serve::session::{MessageHandler, SessionManager};
 
-    let handler: MessageHandler = Box::new(|_| Box::pin(async { Ok(("ok".to_string(), 0, 0)) }));
+    let handler: MessageHandler = Box::new(|_, _| Box::pin(async { Ok(("ok".to_string(), 0, 0)) }));
     let dir = tempfile::tempdir().unwrap();
     let config = Config::default();
     let session =
@@ -366,7 +366,7 @@ async fn grpc_history_persists_across_turns() {
     use crate::serve::session::{MessageHandler, SessionManager};
 
     let handler: MessageHandler =
-        Box::new(|_| Box::pin(async { Ok(("acknowledged".to_string(), 0, 0)) }));
+        Box::new(|_, _| Box::pin(async { Ok(("acknowledged".to_string(), 0, 0)) }));
     let dir = tempfile::tempdir().unwrap();
     let config = Config::default();
     let session =

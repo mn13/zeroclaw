@@ -101,6 +101,9 @@ impl ClawAgent for ClawAgentService {
                     AgentResponse::Queued { position } => {
                         pb::chat_output::Output::Queued(pb::QueuePosition { position })
                     }
+                    AgentResponse::Delta(text) => {
+                        pb::chat_output::Output::Delta(text)
+                    }
                 };
 
                 let _ = stream_tx

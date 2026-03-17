@@ -44,15 +44,11 @@ function InstanceSelector({
   currentInstance,
   onInstanceChange,
   expanded,
-  view,
-  onViewChange,
 }: {
   instances: InstanceInfo[];
   currentInstance: string;
   onInstanceChange: (id: string) => void;
   expanded: boolean;
-  view: View;
-  onViewChange: (v: View) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -166,14 +162,14 @@ function InstanceSelector({
         <div
           style={{
             position: "absolute",
-            bottom: "calc(100% + 4px)",
+            top: "calc(100% + 4px)",
             left: 10,
             right: expanded ? 10 : "auto",
             minWidth: expanded ? undefined : 200,
             background: "var(--bg-dropdown)",
             border: "1px solid var(--border)",
             clipPath: clipCorner(8),
-            boxShadow: "0 -8px 24px rgba(0,0,0,0.4)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             zIndex: 100,
             overflow: "hidden",
           }}
@@ -265,57 +261,6 @@ function InstanceSelector({
               </button>
             );
           })}
-          {/* Divider */}
-          <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
-          {/* Admin section */}
-          <div
-            style={{
-              padding: "8px 10px 4px",
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 9,
-              color: "var(--text-dim)",
-              letterSpacing: 1,
-              textTransform: "uppercase",
-            }}
-          >
-            ADMIN
-          </div>
-          <button
-            onClick={() => {
-              onViewChange("admin");
-              setOpen(false);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              padding: "8px 10px",
-              background: view === "admin" ? "var(--amber-glow)" : "transparent",
-              border: "none",
-              cursor: "pointer",
-              transition: "background 0.1s",
-            }}
-            onMouseEnter={(e) => {
-              if (view !== "admin") e.currentTarget.style.background = "var(--dropdown-hover)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = view === "admin" ? "var(--amber-glow)" : "transparent";
-            }}
-          >
-            <span style={{ fontSize: 14, minWidth: 8 }}>⚙</span>
-            <span
-              style={{
-                fontFamily: "'Outfit', sans-serif",
-                fontSize: 12,
-                fontWeight: view === "admin" ? 600 : 400,
-                color: view === "admin" ? "var(--amber)" : "var(--text-primary)",
-                whiteSpace: "nowrap",
-              }}
-            >
-              Admin Panel
-            </span>
-          </button>
         </div>
       )}
     </div>
@@ -393,6 +338,14 @@ export function Sidebar({
         </span>
       </button>
 
+      {/* Instance selector */}
+      <InstanceSelector
+        instances={instances}
+        currentInstance={currentInstance}
+        onInstanceChange={onInstanceChange}
+        expanded={expanded}
+      />
+
       {/* Nav items */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2, padding: "8px 0" }}>
         {navItems.map((item) => {
@@ -454,15 +407,56 @@ export function Sidebar({
         })}
       </div>
 
-      {/* Instance selector */}
-      <InstanceSelector
-        instances={instances}
-        currentInstance={currentInstance}
-        onInstanceChange={onInstanceChange}
-        expanded={expanded}
-        view={view}
-        onViewChange={onViewChange}
-      />
+      {/* Admin button — always visible */}
+      <div style={{ padding: "0 10px 4px" }}>
+        <button
+          onClick={() => onViewChange("admin")}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            width: "100%",
+            padding: "10px 6px",
+            background: view === "admin" ? "var(--amber-glow)" : "transparent",
+            border: "1px solid var(--border)",
+            clipPath: clipCorner(6),
+            cursor: "pointer",
+            transition: "background 0.15s",
+          }}
+          onMouseEnter={(e) => {
+            if (view !== "admin") e.currentTarget.style.background = "var(--row-hover-bg)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = view === "admin" ? "var(--amber-glow)" : "transparent";
+          }}
+        >
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 14,
+              color: view === "admin" ? "var(--amber)" : "var(--text-dim)",
+              minWidth: 26,
+              textAlign: "center",
+            }}
+          >
+            ⚙
+          </span>
+          {expanded && (
+            <span
+              style={{
+                fontFamily: "'Syne', sans-serif",
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: 2,
+                color: view === "admin" ? "var(--amber)" : "var(--text-dim)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              ADMIN
+            </span>
+          )}
+        </button>
+      </div>
 
       {/* Health status */}
       <div

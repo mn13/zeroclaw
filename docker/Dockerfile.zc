@@ -20,18 +20,18 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --system zc && \
-    useradd --system --gid zc --create-home zc && \
-    mkdir -p /data/.zeroclaw/workspace && chown -R zc:zc /data
-
 COPY --from=builder /usr/local/bin/zc /usr/local/bin/zc
 COPY docker/entrypoint-zc.sh /usr/local/bin/entrypoint-zc.sh
 RUN chmod +x /usr/local/bin/entrypoint-zc.sh
 
-USER zc
+# Ensure mount point for config file exists as a directory (not auto-created as file)
+RUN mkdir -p /etc/zc
+
+# Run as root to handle bind-mounted volumes with varying host ownership.
+# The container is network-isolated and gateway-managed.
 EXPOSE 50051
 VOLUME ["/data"]
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["entrypoint-zc.sh"]
-CMD ["zc", "--grpc-port", "50051", "--data-dir", "/data"]
+CMD ["zc", "--grpc-port", "50051", "--data-dir", "/data", "--config", "/etc/zc/config.toml"]
