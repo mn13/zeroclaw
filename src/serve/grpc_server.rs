@@ -104,6 +104,9 @@ impl ClawAgent for ClawAgentService {
                     AgentResponse::Delta(text) => {
                         pb::chat_output::Output::Delta(text)
                     }
+                    AgentResponse::DraftClear => {
+                        pb::chat_output::Output::Delta("\x00CLEAR\x00".into())
+                    }
                 };
 
                 let _ = stream_tx

@@ -2253,22 +2253,70 @@ pub(crate) async fn run_tool_call_loop(
             None
         };
 
-        let chat_future = provider.chat(
-            ChatRequest {
-                messages: &prepared_messages.messages,
-                tools: request_tools,
-            },
-            model,
-            temperature,
-        );
+        let chat_request = ChatRequest {
+            messages: &prepared_messages.messages,
+            tools: request_tools,
+        };
 
-        let chat_result = if let Some(token) = cancellation_token.as_ref() {
-            tokio::select! {
-                () = token.cancelled() => return Err(ToolLoopCancelled.into()),
-                result = chat_future => result,
+        // Use real streaming when the provider supports it and we have a delta
+        // channel. Text deltas from the LLM are forwarded in real-time.
+        let use_streaming = on_delta.is_some() && provider.supports_streaming();
+        let mut streaming_text_sent = false;
+
+        let chat_result = if use_streaming {
+            // Clear accumulated progress lines ("Thinking...") BEFORE streaming
+            // starts so that LLM text deltas arrive into a clean content field
+            // on the frontend. Progress text is moved to the `thinking` section.
+            if let Some(ref tx) = on_delta {
+                let _ = tx.send(DRAFT_CLEAR_SENTINEL.to_string()).await;
             }
+
+            // Create a forwarder channel: LLM deltas → on_delta (to the user).
+            let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<String>(64);
+            let on_delta_for_stream = on_delta.as_ref().unwrap().clone();
+
+            // Spawn a forwarder that relays streaming deltas to the user's channel.
+            let forwarder = tokio::spawn(async move {
+                while let Some(delta) = stream_rx.recv().await {
+                    if on_delta_for_stream.send(delta).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            streaming_text_sent = true;
+
+            let streaming_future = provider.chat_streaming(
+                chat_request,
+                model,
+                temperature,
+                &stream_tx,
+            );
+
+            let result = if let Some(token) = cancellation_token.as_ref() {
+                tokio::select! {
+                    () = token.cancelled() => Err(ToolLoopCancelled.into()),
+                    result = streaming_future => result,
+                }
+            } else {
+                streaming_future.await
+            };
+
+            // Drop sender so forwarder finishes, then await it.
+            drop(stream_tx);
+            let _ = forwarder.await;
+
+            result
         } else {
-            chat_future.await
+            let chat_future = provider.chat(chat_request, model, temperature);
+            if let Some(token) = cancellation_token.as_ref() {
+                tokio::select! {
+                    () = token.cancelled() => Err(ToolLoopCancelled.into()),
+                    result = chat_future => result,
+                }
+            } else {
+                chat_future.await
+            }
         };
 
         let (response_text, parsed_text, tool_calls, assistant_history_content, native_tool_calls) =
@@ -2439,30 +2487,33 @@ pub(crate) async fn run_tool_call_loop(
                 }),
             );
             // No tool calls — this is the final response.
-            // If a streaming sender is provided, relay the text in small chunks
-            // so the channel can progressively update the draft message.
             if let Some(ref tx) = on_delta {
-                // Clear accumulated progress lines before streaming the final answer.
-                let _ = tx.send(DRAFT_CLEAR_SENTINEL.to_string()).await;
-                // Split on whitespace boundaries, accumulating chunks of at least
-                // STREAM_CHUNK_MIN_CHARS characters for progressive draft updates.
-                let mut chunk = String::new();
-                for word in display_text.split_inclusive(char::is_whitespace) {
-                    if cancellation_token
-                        .as_ref()
-                        .is_some_and(CancellationToken::is_cancelled)
-                    {
-                        return Err(ToolLoopCancelled.into());
+                if streaming_text_sent {
+                    // Real streaming: CLEAR was already sent before streaming
+                    // started and text deltas were forwarded in real-time.
+                    // Nothing more to send.
+                } else {
+                    // Non-streaming fallback: clear progress lines, then relay
+                    // text in small chunks for progressive draft updates.
+                    let _ = tx.send(DRAFT_CLEAR_SENTINEL.to_string()).await;
+                    let mut chunk = String::new();
+                    for word in display_text.split_inclusive(char::is_whitespace) {
+                        if cancellation_token
+                            .as_ref()
+                            .is_some_and(CancellationToken::is_cancelled)
+                        {
+                            return Err(ToolLoopCancelled.into());
+                        }
+                        chunk.push_str(word);
+                        if chunk.len() >= STREAM_CHUNK_MIN_CHARS
+                            && tx.send(std::mem::take(&mut chunk)).await.is_err()
+                        {
+                            break; // receiver dropped
+                        }
                     }
-                    chunk.push_str(word);
-                    if chunk.len() >= STREAM_CHUNK_MIN_CHARS
-                        && tx.send(std::mem::take(&mut chunk)).await.is_err()
-                    {
-                        break; // receiver dropped
+                    if !chunk.is_empty() {
+                        let _ = tx.send(chunk).await;
                     }
-                }
-                if !chunk.is_empty() {
-                    let _ = tx.send(chunk).await;
                 }
             }
             history.push(ChatMessage::assistant(response_text.clone()));

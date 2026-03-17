@@ -41,6 +41,8 @@ pub enum AgentResponse {
     },
     /// A streaming text delta from the agent.
     Delta(String),
+    /// Clear accumulated draft content (before final answer streaming).
+    DraftClear,
 }
 
 /// An event broadcast to all subscribers (for the SubscribeEvents RPC).
@@ -204,6 +206,20 @@ async fn agent_actor_loop(
                 let reply_for_deltas = reply.clone();
                 tokio::spawn(async move {
                     while let Some(text) = delta_rx.recv().await {
+                        // The agent core sends "\x00CLEAR\x00" as a sentinel to
+                        // signal channels to clear their draft. For the gRPC/WS
+                        // path, translate this into a clear marker so the frontend
+                        // can reset accumulated content.
+                        if text == "\x00CLEAR\x00" {
+                            if reply_for_deltas
+                                .send(AgentResponse::DraftClear)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
                         if reply_for_deltas
                             .send(AgentResponse::Delta(text))
                             .await

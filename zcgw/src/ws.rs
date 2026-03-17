@@ -86,8 +86,15 @@ async fn handle_ws(socket: WebSocket, state: AppState, instance_id: String) {
                 match client.send_message(req).await {
                     Ok(resp) => {
                         let mut stream = resp.into_inner();
+                        let mut frame_count = 0u64;
                         while let Some(Ok(chat_out)) = stream.next().await {
                             let frame = chat_output_to_json(&chat_out);
+                            frame_count += 1;
+                            tracing::debug!(
+                                frame = frame_count,
+                                msg_type = frame["type"].as_str().unwrap_or("?"),
+                                "ws frame → client"
+                            );
                             if ws_tx
                                 .send(Message::Text(frame.to_string().into()))
                                 .await
@@ -96,6 +103,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, instance_id: String) {
                                 return;
                             }
                         }
+                        tracing::debug!(total_frames = frame_count, "ws stream complete");
                     }
                     Err(e) => {
                         let _ = ws_tx
@@ -136,6 +144,10 @@ fn chat_output_to_json(out: &proto::ChatOutput) -> serde_json::Value {
     let turn_id = &out.turn_id;
 
     match &out.output {
+        Some(Output::Delta(d)) if d == "\x00CLEAR\x00" => serde_json::json!({
+            "type": "clear",
+            "turn_id": turn_id,
+        }),
         Some(Output::Delta(d)) => serde_json::json!({
             "type": "delta",
             "turn_id": turn_id,

@@ -780,6 +780,93 @@ impl Provider for ReliableProvider {
         )
     }
 
+    async fn chat_streaming(
+        &self,
+        request: ChatRequest<'_>,
+        model: &str,
+        temperature: f64,
+        on_delta: &tokio::sync::mpsc::Sender<String>,
+    ) -> anyhow::Result<ChatResponse> {
+        // Use the same retry/failover logic as chat(), but with streaming.
+        let models = self.model_chain(model);
+        let mut failures = Vec::new();
+
+        for current_model in &models {
+            for (provider_name, provider) in &self.providers {
+                if !provider.supports_streaming() {
+                    // Fall back to non-streaming for this provider.
+                    let req = ChatRequest {
+                        messages: request.messages,
+                        tools: request.tools,
+                    };
+                    match provider.chat(req, current_model, temperature).await {
+                        Ok(resp) => {
+                            if let Some(ref text) = resp.text {
+                                let _ = on_delta.send(text.clone()).await;
+                            }
+                            return Ok(resp);
+                        }
+                        Err(e) => {
+                            let error_detail = compact_error_detail(&e);
+                            push_failure(
+                                &mut failures,
+                                provider_name,
+                                current_model,
+                                1,
+                                1,
+                                "non_streaming_fallback",
+                                &error_detail,
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                let req = ChatRequest {
+                    messages: request.messages,
+                    tools: request.tools,
+                };
+                match provider
+                    .chat_streaming(req, current_model, temperature, on_delta)
+                    .await
+                {
+                    Ok(resp) => return Ok(resp),
+                    Err(e) => {
+                        let non_retryable = is_non_retryable(&e);
+                        let error_detail = compact_error_detail(&e);
+                        push_failure(
+                            &mut failures,
+                            provider_name,
+                            current_model,
+                            1,
+                            1,
+                            if non_retryable {
+                                "non_retryable"
+                            } else {
+                                "retryable"
+                            },
+                            &error_detail,
+                        );
+                        if non_retryable {
+                            if is_context_window_exceeded(&e) {
+                                anyhow::bail!(
+                                    "Request exceeds model context window. Attempts:\n{}",
+                                    failures.join("\n")
+                                );
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        anyhow::bail!(
+            "All providers/models failed (streaming). Attempts:\n{}",
+            failures.join("\n")
+        )
+    }
+
     fn supports_streaming(&self) -> bool {
         self.providers.iter().any(|(_, p)| p.supports_streaming())
     }

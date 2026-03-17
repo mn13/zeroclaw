@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
+use tokio::sync::mpsc;
 
 /// A single message in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,6 +418,30 @@ pub trait Provider: Send + Sync {
     /// Default implementation returns false.
     fn supports_streaming(&self) -> bool {
         false
+    }
+
+    /// Structured chat with real-time streaming via `on_delta`.
+    ///
+    /// Works like `chat()` but forwards text deltas through the channel as they
+    /// arrive from the LLM. Returns the full `ChatResponse` (with tool calls,
+    /// usage, reasoning_content) once streaming completes.
+    ///
+    /// Default implementation falls back to non-streaming `chat()` — the full
+    /// response is sent as a single delta after the blocking call returns.
+    /// Providers that support SSE streaming should override this.
+    async fn chat_streaming(
+        &self,
+        request: ChatRequest<'_>,
+        model: &str,
+        temperature: f64,
+        on_delta: &mpsc::Sender<String>,
+    ) -> anyhow::Result<ChatResponse> {
+        let resp = self.chat(request, model, temperature).await?;
+        // Send the full text as one chunk (fallback for non-streaming providers).
+        if let Some(ref text) = resp.text {
+            let _ = on_delta.send(text.clone()).await;
+        }
+        Ok(resp)
     }
 
     /// Streaming chat with optional system prompt.

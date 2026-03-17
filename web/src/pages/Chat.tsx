@@ -26,6 +26,7 @@ export function Chat({ instanceId, toast }: ChatProps) {
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [tokenInfo, setTokenInfo] = useState({ input: 0, output: 0 });
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
 
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -104,8 +105,19 @@ export function Chat({ instanceId, toast }: ChatProps) {
           setStreaming(true);
           setMessages((prev) => [
             ...prev,
-            { id: msg.turn_id, role: "assistant", content: "", toolCalls: [] },
+            { id: msg.turn_id, role: "assistant", content: "", thinking: "", toolCalls: [] },
           ]);
+          break;
+
+        case "clear":
+          // Transition from thinking/progress to final answer.
+          // Move any accumulated content to the thinking field and clear content.
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== msg.turn_id) return m;
+              return { ...m, thinking: m.content || m.thinking || "", content: "" };
+            }),
+          );
           break;
 
         case "delta":
@@ -242,6 +254,15 @@ export function Chat({ instanceId, toast }: ChatProps) {
     });
   }, []);
 
+  const toggleThinking = useCallback((msgId: string) => {
+    setExpandedThinking((prev) => {
+      const next = new Set(prev);
+      if (next.has(msgId)) next.delete(msgId);
+      else next.add(msgId);
+      return next;
+    });
+  }, []);
+
   // ── Render helpers ──
 
   function renderToolCard(tc: ToolCallInfo, idx: number, messageId: string) {
@@ -257,8 +278,8 @@ export function Chat({ instanceId, toast }: ChatProps) {
           background: "var(--bg-input)",
           border: "1px solid var(--border)",
           clipPath: clipCorner(6),
-          marginTop: 6,
-          marginBottom: 4,
+          marginTop: 4,
+          marginBottom: 2,
           padding: 0,
         }}
       >
@@ -268,7 +289,7 @@ export function Chat({ instanceId, toast }: ChatProps) {
             display: "flex",
             alignItems: "center",
             gap: 8,
-            padding: "6px 10px",
+            padding: "4px 8px",
             borderBottom: "1px solid var(--border)",
           }}
         >
@@ -278,7 +299,7 @@ export function Chat({ instanceId, toast }: ChatProps) {
           <span
             style={{
               fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 10,
+              fontSize: 9,
               fontWeight: 700,
               color: "var(--amber-bright)",
               textTransform: "uppercase",
@@ -291,11 +312,11 @@ export function Chat({ instanceId, toast }: ChatProps) {
             style={{
               marginLeft: "auto",
               fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 9,
+              fontSize: 8,
               fontWeight: 600,
               color: badge.color,
               letterSpacing: 1,
-              padding: "1px 6px",
+              padding: "1px 4px",
               border: `1px solid ${badge.color}`,
               borderRadius: 2,
             }}
@@ -307,13 +328,13 @@ export function Chat({ instanceId, toast }: ChatProps) {
         {/* Arguments */}
         <div
           style={{
-            padding: "6px 10px",
+            padding: "4px 8px",
             fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 10,
+            fontSize: 9,
             color: "var(--text-dim)",
             whiteSpace: "pre-wrap",
             wordBreak: "break-all",
-            lineHeight: 1.5,
+            lineHeight: 1.4,
           }}
         >
           {tc.arguments}
@@ -325,16 +346,16 @@ export function Chat({ instanceId, toast }: ChatProps) {
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 8,
-              padding: "6px 10px",
+              gap: 6,
+              padding: "4px 8px",
               borderTop: "1px solid var(--border)",
             }}
           >
             <span
               style={{
                 display: "inline-block",
-                width: 6,
-                height: 6,
+                width: 5,
+                height: 5,
                 background: "var(--amber)",
                 animation: "pulse-cube 1.5s ease-in-out infinite",
               }}
@@ -342,7 +363,7 @@ export function Chat({ instanceId, toast }: ChatProps) {
             <span
               style={{
                 fontFamily: "'JetBrains Mono', monospace",
-                fontSize: 10,
+                fontSize: 9,
                 color: "var(--text-dim)",
                 letterSpacing: 1,
               }}
@@ -356,7 +377,7 @@ export function Chat({ instanceId, toast }: ChatProps) {
         {tc.output != null && (
           <div
             style={{
-              padding: "6px 10px",
+              padding: "4px 8px",
               borderTop: "1px solid var(--border)",
             }}
           >
@@ -371,7 +392,7 @@ export function Chat({ instanceId, toast }: ChatProps) {
                   color: "var(--amber-dim)",
                   cursor: "pointer",
                   padding: "2px 0",
-                  marginBottom: 4,
+                  marginBottom: 2,
                   letterSpacing: 1,
                 }}
               >
@@ -381,17 +402,124 @@ export function Chat({ instanceId, toast }: ChatProps) {
             <div
               style={{
                 fontFamily: "'JetBrains Mono', monospace",
-                fontSize: 10,
+                fontSize: 9,
                 color: tc.status === "fail" ? "var(--error-text)" : "var(--text-primary)",
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-all",
-                lineHeight: 1.5,
+                lineHeight: 1.4,
                 maxHeight: hasLongOutput && !isExpanded ? 60 : undefined,
                 overflow: hasLongOutput && !isExpanded ? "hidden" : undefined,
               }}
             >
               {tc.output}
             </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /** Collapsible thinking/tool-call section shown above the final answer. */
+  function renderThinkingSection(msg: ChatMessage) {
+    const hasThinking = !!msg.thinking;
+    const hasTools = (msg.toolCalls ?? []).length > 0;
+    const isActive = streaming && msg.id === currentTurnIdRef.current;
+
+    if (!hasThinking && !hasTools && !isActive) return null;
+
+    // While streaming and before clear, show thinking content live (expanded)
+    const isThinkingPhase = isActive && !msg.content && !hasTools;
+    if (isThinkingPhase && hasThinking) {
+      // Show live thinking content while streaming
+      return (
+        <div
+          style={{
+            padding: "6px 10px",
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 11,
+            color: "var(--text-dim)",
+            whiteSpace: "pre-wrap",
+            lineHeight: 1.5,
+          }}
+        >
+          {msg.thinking}
+        </div>
+      );
+    }
+
+    // After thinking phase is complete, show collapsible section
+    if (!hasThinking && !hasTools) return null;
+
+    const isExpanded = expandedThinking.has(msg.id);
+    const toolCount = (msg.toolCalls ?? []).length;
+    const summary = [
+      hasThinking ? "thinking" : "",
+      toolCount > 0 ? `${toolCount} tool${toolCount > 1 ? "s" : ""}` : "",
+    ].filter(Boolean).join(" + ");
+
+    return (
+      <div style={{ marginBottom: 6 }}>
+        <button
+          onClick={() => toggleThinking(msg.id)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            padding: "2px 0",
+            width: "100%",
+          }}
+        >
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 10,
+              color: "var(--text-dim)",
+              transition: "transform 0.15s",
+              transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+              display: "inline-block",
+            }}
+          >
+            {"\u25B6"}
+          </span>
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 10,
+              color: "var(--text-dim)",
+              letterSpacing: 0.5,
+            }}
+          >
+            {summary}
+          </span>
+        </button>
+
+        {isExpanded && (
+          <div
+            style={{
+              marginTop: 4,
+              paddingLeft: 4,
+              borderLeft: "2px solid var(--border)",
+            }}
+          >
+            {hasThinking && (
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 10,
+                  color: "var(--text-dim)",
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.4,
+                  padding: "4px 8px",
+                  marginBottom: hasTools ? 4 : 0,
+                }}
+              >
+                {msg.thinking}
+              </div>
+            )}
+            {msg.toolCalls?.map((tc, idx) => renderToolCard(tc, idx, msg.id))}
           </div>
         )}
       </div>
@@ -462,6 +590,10 @@ export function Chat({ instanceId, toast }: ChatProps) {
               padding: "8px 12px",
             }}
           >
+            {/* Collapsible thinking/tool section */}
+            {!isUser && !isError && renderThinkingSection(msg)}
+
+            {/* Main content */}
             {msg.content && (
               <div
                 style={{
@@ -477,15 +609,13 @@ export function Chat({ instanceId, toast }: ChatProps) {
               </div>
             )}
 
-            {/* Inline tool cards */}
-            {msg.toolCalls?.map((tc, idx) => renderToolCard(tc, idx, msg.id))}
-
             {/* Streaming cursor for active assistant message */}
             {!isUser &&
               !isError &&
               streaming &&
               msg.id === currentTurnIdRef.current &&
               !msg.content &&
+              !msg.thinking &&
               (msg.toolCalls ?? []).length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span

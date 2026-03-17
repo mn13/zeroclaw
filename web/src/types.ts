@@ -1,6 +1,7 @@
 /** WebSocket message types from the zcgw gateway. */
 
 export type WsIncoming =
+  | { type: "clear"; turn_id: string }
   | { type: "delta"; turn_id: string; content: string }
   | { type: "tool_start"; turn_id: string; tool: string; arguments: string }
   | { type: "tool_result"; turn_id: string; tool: string; success: boolean; output: string }
@@ -26,6 +27,8 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "error";
   content: string;
+  /** Progress/thinking text shown before the final answer (e.g. "Thinking..."). */
+  thinking?: string;
   toolCalls?: ToolCallInfo[];
 }
 

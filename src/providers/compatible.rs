@@ -586,11 +586,15 @@ struct ResponsesContent {
 #[derive(Debug, Deserialize)]
 struct StreamChunkResponse {
     choices: Vec<StreamChoice>,
+    /// Usage info is included in the final chunk when `stream_options.include_usage` is set.
+    #[serde(default)]
+    usage: Option<UsageInfo>,
 }
 
 #[derive(Debug, Deserialize)]
 struct StreamChoice {
     delta: StreamDelta,
+    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
@@ -601,6 +605,27 @@ struct StreamDelta {
     /// Reasoning/thinking models may stream output via `reasoning_content`.
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// Tool call deltas streamed incrementally.
+    #[serde(default)]
+    tool_calls: Option<Vec<StreamToolCallDelta>>,
+}
+
+/// Incremental tool call delta in SSE streaming format.
+#[derive(Debug, Deserialize)]
+struct StreamToolCallDelta {
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<StreamFunctionDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamFunctionDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 /// Parse SSE (Server-Sent Events) stream from OpenAI-compatible providers.
@@ -640,6 +665,100 @@ fn parse_sse_line(line: &str) -> StreamResult<Option<String>> {
     }
 
     Ok(None)
+}
+
+/// Parsed SSE event carrying text deltas, tool call deltas, and/or usage.
+struct SseEvent {
+    text_delta: Option<String>,
+    tool_call_deltas: Vec<StreamToolCallDelta>,
+    usage: Option<UsageInfo>,
+}
+
+/// Parse a full SSE event including tool call deltas and usage info.
+fn parse_sse_event(line: &str) -> StreamResult<Option<SseEvent>> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with(':') {
+        return Ok(None);
+    }
+    let data = match line.strip_prefix("data:") {
+        Some(d) => d.trim(),
+        None => return Ok(None),
+    };
+    if data == "[DONE]" {
+        return Ok(None);
+    }
+    let chunk: StreamChunkResponse = serde_json::from_str(data).map_err(StreamError::Json)?;
+
+    let mut event = SseEvent {
+        text_delta: None,
+        tool_call_deltas: Vec::new(),
+        usage: chunk.usage,
+    };
+
+    if let Some(choice) = chunk.choices.into_iter().next() {
+        // Text content
+        if let Some(content) = choice.delta.content.filter(|c| !c.is_empty()) {
+            event.text_delta = Some(content);
+        } else if let Some(reasoning) = choice.delta.reasoning_content.filter(|c| !c.is_empty()) {
+            event.text_delta = Some(reasoning);
+        }
+        // Tool call deltas
+        if let Some(tc_deltas) = choice.delta.tool_calls {
+            event.tool_call_deltas = tc_deltas;
+        }
+    }
+
+    Ok(Some(event))
+}
+
+/// Accumulator for building tool calls from streaming deltas.
+struct ToolCallAccumulator {
+    calls: Vec<(Option<String>, String, String)>, // (id, name, arguments)
+}
+
+impl ToolCallAccumulator {
+    fn new() -> Self {
+        Self { calls: Vec::new() }
+    }
+
+    fn apply_delta(&mut self, delta: StreamToolCallDelta) {
+        // Grow the vector if needed
+        while self.calls.len() <= delta.index {
+            self.calls.push((None, String::new(), String::new()));
+        }
+        let entry = &mut self.calls[delta.index];
+        if let Some(id) = delta.id {
+            entry.0 = Some(id);
+        }
+        if let Some(func) = delta.function {
+            if let Some(name) = func.name {
+                entry.1.push_str(&name);
+            }
+            if let Some(args) = func.arguments {
+                entry.2.push_str(&args);
+            }
+        }
+    }
+
+    fn into_tool_calls(self) -> Vec<ProviderToolCall> {
+        self.calls
+            .into_iter()
+            .filter(|(_, name, _)| !name.is_empty())
+            .map(|(id, name, arguments)| {
+                let normalized_arguments =
+                    if serde_json::from_str::<serde_json::Value>(&arguments).is_ok() {
+                        arguments
+                    } else {
+                        "{}".to_string()
+                    };
+                ProviderToolCall {
+                    id: id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    name,
+                    arguments: normalized_arguments,
+                }
+            })
+            .collect()
+    }
 }
 
 /// Convert SSE byte stream to text chunks.
@@ -1587,6 +1706,141 @@ impl Provider for OpenAiCompatibleProvider {
         let mut result = Self::parse_native_response(message);
         result.usage = usage;
         Ok(result)
+    }
+
+    async fn chat_streaming(
+        &self,
+        request: ProviderChatRequest<'_>,
+        model: &str,
+        temperature: f64,
+        on_delta: &tokio::sync::mpsc::Sender<String>,
+    ) -> anyhow::Result<ProviderChatResponse> {
+        let credential = self.credential.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} API key not set. Run `zeroclaw onboard` or set the appropriate env var.",
+                self.name
+            )
+        })?;
+
+        let tools = Self::convert_tool_specs(request.tools);
+        let effective_messages = if self.merge_system_into_user {
+            Self::flatten_system_messages(request.messages)
+        } else {
+            request.messages.to_vec()
+        };
+        let native_request = NativeChatRequest {
+            model: model.to_string(),
+            messages: Self::convert_messages_for_native(
+                &effective_messages,
+                !self.merge_system_into_user,
+            ),
+            temperature,
+            stream: Some(true),
+            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
+            tools,
+        };
+
+        let url = self.chat_completions_url();
+        let response = self
+            .apply_auth_header(
+                self.http_client()
+                    .post(&url)
+                    .json(&native_request)
+                    .header("Accept", "text/event-stream"),
+                credential,
+            )
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error = response.text().await?;
+            let sanitized = super::sanitize_api_error(&error);
+
+            if Self::is_native_tool_schema_unsupported(status, &sanitized) {
+                // Fall back to non-streaming prompt-guided path.
+                let fallback_messages =
+                    Self::with_prompt_guided_tool_instructions(request.messages, request.tools);
+                let text = self
+                    .chat_with_history(&fallback_messages, model, temperature)
+                    .await?;
+                let _ = on_delta.send(text.clone()).await;
+                return Ok(ProviderChatResponse {
+                    text: Some(text),
+                    tool_calls: vec![],
+                    usage: None,
+                    reasoning_content: None,
+                });
+            }
+
+            anyhow::bail!("{} API error ({status}): {sanitized}", self.name);
+        }
+
+        // Stream SSE events, forwarding text deltas and accumulating tool calls.
+        let mut accumulated_text = String::new();
+        let mut tool_acc = ToolCallAccumulator::new();
+        let mut usage_info: Option<UsageInfo> = None;
+        let mut buffer = String::new();
+        let mut bytes_stream = response.bytes_stream();
+
+        while let Some(item) = bytes_stream.next().await {
+            let bytes = item?;
+            let text = String::from_utf8(bytes.to_vec())
+                .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in SSE stream: {e}"))?;
+            buffer.push_str(&text);
+
+            while let Some(pos) = buffer.find('\n') {
+                let line: String = buffer.drain(..=pos).collect();
+                if let Ok(Some(event)) = parse_sse_event(&line) {
+                    if let Some(delta) = event.text_delta {
+                        accumulated_text.push_str(&delta);
+                        let _ = on_delta.send(delta).await;
+                    }
+                    for tc_delta in event.tool_call_deltas {
+                        tool_acc.apply_delta(tc_delta);
+                    }
+                    if event.usage.is_some() {
+                        usage_info = event.usage;
+                    }
+                }
+            }
+        }
+
+        // Process any remaining buffer
+        if !buffer.trim().is_empty() {
+            if let Ok(Some(event)) = parse_sse_event(&buffer) {
+                if let Some(delta) = event.text_delta {
+                    accumulated_text.push_str(&delta);
+                    let _ = on_delta.send(delta).await;
+                }
+                for tc_delta in event.tool_call_deltas {
+                    tool_acc.apply_delta(tc_delta);
+                }
+                if event.usage.is_some() {
+                    usage_info = event.usage;
+                }
+            }
+        }
+
+        let usage = usage_info.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+        });
+
+        let tool_calls = tool_acc.into_tool_calls();
+        let text = if accumulated_text.is_empty() {
+            None
+        } else {
+            let stripped = strip_think_tags(&accumulated_text);
+            if stripped.is_empty() { None } else { Some(stripped) }
+        };
+
+        Ok(ProviderChatResponse {
+            text,
+            tool_calls,
+            usage,
+            reasoning_content: None,
+        })
     }
 
     fn supports_native_tools(&self) -> bool {
