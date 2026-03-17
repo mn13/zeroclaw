@@ -298,7 +298,7 @@ export default function Cron({ instanceId, toast }: Props) {
                   opacity: 0.4,
                 }}
               >
-                {"\u23F0"}
+                {"\u27F3"}
               </div>
               No cron jobs configured
               <div style={{ fontSize: 11, marginTop: 4, color: "var(--text-dim)" }}>
