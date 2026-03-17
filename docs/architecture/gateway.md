@@ -41,13 +41,14 @@ The gateway is a lightweight multi-instance orchestrator that sits between clien
 | `main.rs` | Entrypoint. Loads config and env, builds Axum router, starts server. |
 | `config.rs` | `GatewayConfig` and `InstanceConfig` structs. TOML parsing. |
 | `registry.rs` | `InstanceRegistry` — manages instance metadata, gRPC client pool, and health state. |
-| `api.rs` | REST API handlers for instance-scoped operations (status, history, config, memory, chat, identity, connectors, MCP, cron, skills). |
+| `api.rs` | REST API handlers for instance-scoped operations (status, history, config, memory, chat, identity, connectors, MCP, Google, cron, skills). |
 | `admin.rs` | Admin API handlers (stats, gateway config, instance CRUD, container actions). |
 | `ws.rs` | WebSocket chat handler. Bridges WS messages to gRPC `SendMessage` streams. |
 | `auth.rs` | Bearer token authentication middleware. |
 | `docker.rs` | Docker container lifecycle management (create, start, stop, restart, destroy). |
-| `static_files.rs` | Serves the embedded Web UI SPA. |
 | `app_state.rs` | Shared application state struct. |
+
+**Note**: The gateway is a pure API server — it does not serve the Web UI. The frontend is deployed as a separate nginx container (see [Docker documentation](docker.md)).
 
 ## Configuration
 

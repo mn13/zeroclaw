@@ -1,6 +1,6 @@
 # Docker Deployment
 
-ZeroClaw provides Docker images and a compose setup for deploying the full stack: a gateway with one or more agent instances.
+ZeroClaw provides Docker images and a compose setup for deploying the full stack: a gateway, a web UI, and one or more agent instances.
 
 ## Images
 
@@ -13,21 +13,34 @@ Multi-stage build:
 - **Exposed port**: `8080`
 - **Command**: `zcgw`
 - Runs as root to access `/var/run/docker.sock`.
+- The gateway is a pure API server — it does not serve the Web UI.
 
 ### `Dockerfile.zc` — Agent Image
 
 Multi-stage build:
 1. **Builder**: `rust:1.88-slim` with `protobuf-compiler`. Builds the `zc` binary with the `ci` profile.
-2. **Runtime**: `debian:bookworm-slim` with `ca-certificates` and `curl`.
+2. **Runtime**: `debian:bookworm-slim` with `ca-certificates`, `curl`, and [`gog` CLI](https://github.com/steipete/gogcli) (for Google OAuth integration).
 
 - **Exposed port**: `50051` (gRPC)
 - **Volume**: `/data` (persistent history and memory)
 - **Entrypoint**: `entrypoint-zc.sh`
 - **Default command**: `zc --grpc-port 50051 --data-dir /data --config /etc/zc/config.toml`
 
+### `Dockerfile.web` — Web UI Image
+
+Multi-stage build:
+1. **Build**: `node:20-slim`. Installs dependencies and runs `npm run build` on the Vite/React app.
+2. **Runtime**: `nginx:stable-alpine`. Serves the static SPA and reverse-proxies API/WebSocket requests to the gateway.
+
+- **Exposed port**: `3000`
+- Nginx config (`docker/nginx.conf`) routes:
+  - `/api/*` and `/health` → `http://gateway:8080` (reverse proxy)
+  - `/ws/*` → `http://gateway:8080` (WebSocket upgrade proxy)
+  - Everything else → SPA fallback (`index.html`)
+
 ## Docker Compose
 
-The compose file (`docker/docker-compose.yml`) defines the gateway service:
+The compose file (`docker/docker-compose.yml`) defines two services:
 
 ```yaml
 services:
@@ -46,7 +59,7 @@ services:
       ZCGW_DOCKER_CONFIG_TEMPLATE: /etc/zcgw/zc-template.toml
       ZCGW_HOST_MODE: "false"
       ZCGW_AGENTS_DIR: /var/lib/zcgw/agents
-      ZCGW_HOST_AGENTS_DIR: "${PWD}/agents"
+      ZCGW_HOST_AGENTS_DIR: "${ZCGW_HOST_AGENTS_DIR}"
       ZCGW_BASE_PORT: "50051"
       VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
@@ -60,11 +73,26 @@ services:
       resources:
         limits:
           memory: 256M
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 ```
 
-Note that `ZCGW_DOCKER_IMAGE` is set to `zeroclaw-agent` here, overriding the code default of `zeroclaw:latest`. Similarly, `ZCGW_DOCKER_NETWORK` defaults to `docker_default` in compose, overriding the code default of `zeroclaw-net`. The `OPENAI_API_KEY` is not explicitly listed in compose but is auto-forwarded by the gateway code if present in the environment.
-
-Agent containers are **not** defined in compose — they are dynamically created and managed by the gateway at runtime via the Docker API.
+Notes:
+- `ZCGW_DOCKER_IMAGE` is set to `zeroclaw-agent` here, overriding the code default of `zeroclaw:latest`. Similarly, `ZCGW_DOCKER_NETWORK` defaults to `docker_default` in compose, overriding the code default of `zeroclaw-net`.
+- `ZCGW_HOST_AGENTS_DIR` must be set to the host-side absolute path of the agents directory (needed for Docker bind mounts when the gateway itself runs inside Docker).
+- `OPENAI_API_KEY` is not explicitly listed in compose but is auto-forwarded by the gateway code if present in the environment.
+- Agent containers are **not** defined in compose — they are dynamically created and managed by the gateway at runtime via the Docker API.
 
 ## How It Works
 
@@ -76,6 +104,7 @@ Agent containers are **not** defined in compose — they are dynamically created
    - Missing containers are created from the `ZCGW_DOCKER_IMAGE`.
    - Containers are started or stopped based on `desired_state`.
 3. The health check loop starts, pinging all agent instances every 30 seconds.
+4. The web container starts nginx, serving the SPA on port 3000 and proxying API/WS requests to the gateway on port 8080.
 
 ### Agent Container Lifecycle
 
@@ -95,12 +124,20 @@ When creating a new agent container, the gateway:
 
 ### Networking
 
+```
+Browser (:3000) ──→ nginx (web container)
+                      │
+                      ├── /api/* ──→ gateway (:8080) ──gRPC──→ agent containers (:50051)
+                      ├── /ws/*  ──→ gateway (:8080) ──gRPC──→ agent containers (:50051)
+                      └── /*     ──→ SPA static files
+```
+
 | Mode | Gateway → Agent | Details |
 |------|----------------|---------|
 | **Docker mode** (`ZCGW_HOST_MODE=false`) | Via Docker network hostname | Agents are addressed as `http://zc-<id>:50051` on the shared Docker network. |
 | **Host mode** (`ZCGW_HOST_MODE=true`) | Via localhost port mapping | Agents are addressed as `http://localhost:<port>`. Ports are assigned sequentially from `ZCGW_BASE_PORT`. |
 
-### Volume Mounts
+### Volume Mounts (Gateway)
 
 | Container Path | Host Path | Purpose |
 |----------------|-----------|---------|
@@ -127,7 +164,7 @@ desired_state = "running"
 
 [instances.agent-morph]
 grpc_address = "http://agent-morph:50051"
-display_name = "morpheus"
+display_name = "morph"
 desired_state = "running"
 ```
 
@@ -136,6 +173,7 @@ desired_state = "running"
 ```bash
 # Set required environment variables
 export ZCGW_AUTH_TOKEN="your-secret-token"
+export ZCGW_HOST_AGENTS_DIR="$(pwd)/agents"
 export OPENROUTER_API_KEY="sk-or-..."
 
 # Build and start
@@ -143,5 +181,7 @@ cd docker
 docker compose up --build -d
 
 # Access the Web UI
-open http://localhost:8080
+open http://localhost:3000
 ```
+
+The Web UI is served on port **3000** (nginx). The gateway API is on port **8080** (direct access for custom clients).

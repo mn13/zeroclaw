@@ -463,6 +463,81 @@ Update Composio configuration.
 {"enabled": true, "api_key": "...", "entity_id": "default"}
 ```
 
+### `GET /api/instances/{id}/integrations/google`
+
+Get Google integration status (GOGCLI-based OAuth).
+
+**Response** `200 OK`:
+```json
+{
+  "enabled": false,
+  "has_credentials": false,
+  "accounts": [],
+  "auto_whitelist_gog": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Whether Google integration is active. |
+| `has_credentials` | boolean | Whether OAuth client credentials JSON has been provided. |
+| `accounts` | string[] | List of authorized Google account emails. |
+| `auto_whitelist_gog` | boolean | Auto-whitelist Google domains for the agent. |
+
+### `PUT /api/instances/{id}/integrations/google`
+
+Update Google integration configuration.
+
+**Request Body**:
+```json
+{
+  "enabled": true,
+  "oauth_client_credentials": "{...}",
+  "auto_whitelist_gog": true
+}
+```
+
+All fields are optional. The `oauth_client_credentials` JSON is also written to the agent's `google/client.json` file for the `gog` CLI.
+
+### `POST /api/instances/{id}/integrations/google/auth/init`
+
+Initiate Google OAuth flow for an account. Runs `gog auth add` inside the agent container and returns an authorization URL.
+
+**Request Body**:
+```json
+{"email": "user@example.com"}
+```
+
+**Response** `200 OK`:
+```json
+{"auth_url": "https://accounts.google.com/o/oauth2/...", "email": "user@example.com"}
+```
+
+### `POST /api/instances/{id}/integrations/google/auth/complete`
+
+Complete the OAuth flow by submitting the authorization code.
+
+**Request Body**:
+```json
+{"email": "user@example.com", "auth_code": "4/0A..."}
+```
+
+**Response** `200 OK`:
+```json
+{"ok": true, "email": "user@example.com"}
+```
+
+On success, the email is added to the `google.accounts` list in the agent's config.
+
+### `DELETE /api/instances/{id}/integrations/google/accounts/{email}`
+
+Remove a Google account from the agent's configuration.
+
+**Response** `200 OK`:
+```json
+{"ok": true}
+```
+
 ---
 
 ## Cron Jobs

@@ -2,12 +2,13 @@
 
 The ZeroClaw Web UI is a React single-page application that provides a graphical interface for interacting with agent instances through the gateway.
 
-**Directory**: `web/` | **Served by**: zcgw (embedded via `rust-embed`)
+**Directory**: `web/` | **Deployed as**: Separate nginx container (see [Docker documentation](docker.md))
 
 ## Technology Stack
 
 - **React** with TypeScript
 - **Vite** for build tooling
+- **nginx** serves the built SPA and reverse-proxies `/api/*` and `/ws/*` to the gateway
 - Connected to the gateway via REST API and WebSocket
 
 ## Pages and Features
@@ -46,6 +47,7 @@ The Web UI also provides management interfaces for:
 - **Identity editor** — manage persona and instruction files
 - **Connectors** — configure Telegram, Discord, Slack, and other channels
 - **MCP servers** — manage Model Context Protocol server connections
+- **Google integration** — OAuth account linking, credential management
 - **Memory browser** — view and search agent memory entries
 - **Cron jobs** — schedule recurring tasks
 - **Skills** — manage custom agent skills
@@ -55,6 +57,7 @@ The Web UI also provides management interfaces for:
 A lightweight fetch wrapper that handles:
 - **Authentication**: Stores a bearer token in a cookie (`zc_token`, 30-day expiry) and attaches it to all requests via the `Authorization` header.
 - **REST calls**: Typed functions for every API endpoint (`listInstances`, `getStatus`, `getHistory`, `updateConfig`, etc.).
+- **Integration clients**: Google OAuth (`getGoogle`, `updateGoogle`, `googleAuthInit`, `googleAuthComplete`, `deleteGoogleAccount`) and Composio (`getComposio`, `updateComposio`).
 - **WebSocket**: `connectChat(instanceId)` creates a WebSocket connection to `/ws/chat?instance=<id>&token=<token>`.
 
 ### Type Definitions (`types.ts`)
@@ -74,6 +77,15 @@ type WsIncoming =
   | { type: "status"; turn_id: string; busy: boolean; current_turn_index: number; history_length: number };
 ```
 
+A thinking step represents one round of agent processing before a `clear` event resets the draft:
+
+```typescript
+interface ThinkingStep {
+  text: string;
+  toolCalls?: ToolCallInfo[];
+}
+```
+
 And local chat message types:
 
 ```typescript
@@ -81,8 +93,10 @@ interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "error";
   content: string;
-  thinking?: string;          // Progress/thinking text shown during processing
-  toolCalls?: ToolCallInfo[]; // Tool invocations within this turn
+  /** Thinking steps collected before the final answer. Each CLEAR adds one. */
+  steps?: ThinkingStep[];
+  /** Tool calls for the current (not-yet-cleared) round. */
+  toolCalls?: ToolCallInfo[];
 }
 
 interface ToolCallInfo {
@@ -92,6 +106,8 @@ interface ToolCallInfo {
   output?: string;
 }
 ```
+
+Each time a `clear` frame arrives, the accumulated draft text and tool calls are bundled into a `ThinkingStep` and pushed onto `steps`. This allows the UI to show collapsible "thinking" rounds before the final streamed answer.
 
 ## Authentication Flow
 
