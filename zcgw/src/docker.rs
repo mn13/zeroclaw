@@ -181,6 +181,16 @@ async fn setup_agent_dir(agents_dir: &Path, id: &str, config_toml: &str) -> anyh
     let config_path = agent_dir.join("config.toml");
 
     tokio::fs::create_dir_all(&zc_dir).await?;
+
+    // Guard: if config.toml was auto-created as a directory by a stale Docker
+    // bind mount, remove it so we can write the actual file.
+    if let Ok(meta) = tokio::fs::metadata(&config_path).await {
+        if meta.is_dir() {
+            warn!(path = %config_path.display(), "config.toml is a directory — removing stale mount artifact");
+            tokio::fs::remove_dir_all(&config_path).await?;
+        }
+    }
+
     tokio::fs::write(&config_path, config_toml).await?;
     debug!(path = %agent_dir.display(), "set up agent directory");
 

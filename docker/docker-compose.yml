@@ -14,7 +14,7 @@ services:
       ZCGW_DOCKER_CONFIG_TEMPLATE: /etc/zcgw/zc-template.toml
       ZCGW_HOST_MODE: "false"
       ZCGW_AGENTS_DIR: /var/lib/zcgw/agents
-      ZCGW_HOST_AGENTS_DIR: "${PWD}/agents"
+      ZCGW_HOST_AGENTS_DIR: "${PWD}/docker/agents"
       ZCGW_BASE_PORT: "50051"
       VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
