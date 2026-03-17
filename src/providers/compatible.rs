@@ -696,11 +696,10 @@ fn parse_sse_event(line: &str) -> StreamResult<Option<SseEvent>> {
     };
 
     if let Some(choice) = chunk.choices.into_iter().next() {
-        // Text content
+        // Text content (reasoning_content intentionally ignored during streaming —
+        // it is not persisted in history so we drop it for consistency).
         if let Some(content) = choice.delta.content.filter(|c| !c.is_empty()) {
             event.text_delta = Some(content);
-        } else if let Some(reasoning) = choice.delta.reasoning_content.filter(|c| !c.is_empty()) {
-            event.text_delta = Some(reasoning);
         }
         // Tool call deltas
         if let Some(tc_deltas) = choice.delta.tool_calls {
@@ -1782,6 +1781,7 @@ impl Provider for OpenAiCompatibleProvider {
         let mut usage_info: Option<UsageInfo> = None;
         let mut buffer = String::new();
         let mut bytes_stream = response.bytes_stream();
+        let mut first_content = true;
 
         while let Some(item) = bytes_stream.next().await {
             let bytes = item?;
@@ -1792,7 +1792,16 @@ impl Provider for OpenAiCompatibleProvider {
             while let Some(pos) = buffer.find('\n') {
                 let line: String = buffer.drain(..=pos).collect();
                 if let Ok(Some(event)) = parse_sse_event(&line) {
-                    if let Some(delta) = event.text_delta {
+                    if let Some(mut delta) = event.text_delta {
+                        // Trim leading whitespace from the first content delta
+                        // (models may emit newlines after reasoning_content).
+                        if first_content {
+                            delta = delta.trim_start().to_string();
+                            if delta.is_empty() {
+                                continue;
+                            }
+                            first_content = false;
+                        }
                         accumulated_text.push_str(&delta);
                         let _ = on_delta.send(delta).await;
                     }

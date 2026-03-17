@@ -1,5 +1,15 @@
 listen_addr = "0.0.0.0:8080"
 
+[instances.agent-morph]
+grpc_address = "http://agent-morph:50051"
+display_name = "morph"
+desired_state = "running"
+
+[instances.test]
+grpc_address = "http://test:50051"
+display_name = "test"
+desired_state = "running"
+
 [instances.agent-ava]
 grpc_address = "http://agent-ava:50051"
 display_name = "ava"

@@ -1,4 +1,5 @@
-COMPOSE := docker compose -f docker/docker-compose.yml
+ROOT_DIR := $(shell cd $(dir $(lastword $(MAKEFILE_LIST))) && pwd)
+COMPOSE := ZCGW_HOST_AGENTS_DIR=$(ROOT_DIR)/docker/agents docker compose -f docker/docker-compose.yml
 AGENT_IMAGE := zeroclaw-agent
 
 .PHONY: build up down restart gateway web
