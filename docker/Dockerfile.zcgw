@@ -1,14 +1,5 @@
 # syntax=docker/dockerfile:1
 
-# ── Web UI ──────────────────────────────────────────────────────────
-FROM node:20-slim AS webui
-
-WORKDIR /web
-COPY web/package.json web/package-lock.json* ./
-RUN npm ci
-COPY web/ .
-RUN npm run build
-
 # ── Builder ──────────────────────────────────────────────────────────
 FROM rust:1.88-slim AS builder
 
@@ -18,7 +9,6 @@ RUN apt-get update && \
 
 WORKDIR /src
 COPY . .
-COPY --from=webui /web/dist /src/web/dist
 
 RUN cargo build -p zcgw --profile ci && \
     cp target/ci/zcgw /usr/local/bin/zcgw

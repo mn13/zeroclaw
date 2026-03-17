@@ -34,8 +34,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "ansi", "env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
-rust-embed = "8"
-mime_guess = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [build-dependencies]

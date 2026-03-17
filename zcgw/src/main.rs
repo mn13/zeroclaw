@@ -5,7 +5,7 @@ mod auth;
 mod config;
 mod docker;
 mod registry;
-mod static_files;
+
 mod ws;
 
 pub mod proto {
@@ -280,10 +280,7 @@ fn build_router(state: AppState) -> Router {
             put(api::update_skill).delete(api::delete_skill),
         );
 
-    let spa = Router::new().fallback(static_files::static_handler);
-
-    api.merge(spa)
-        .layer(middleware::from_fn_with_state(
+    api.layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
         ))

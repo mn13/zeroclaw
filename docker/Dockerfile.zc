@@ -20,9 +20,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-ARG GOG_VERSION=v0.12.0
-RUN curl -fsSL "https://github.com/steipete/gogcli/releases/download/${GOG_VERSION}/gog_linux_amd64" \
-    -o /usr/local/bin/gog && chmod +x /usr/local/bin/gog
+ARG GOG_VERSION=0.12.0
+RUN curl -fsSL "https://github.com/steipete/gogcli/releases/download/v${GOG_VERSION}/gogcli_${GOG_VERSION}_linux_amd64.tar.gz" \
+    | tar xz -C /usr/local/bin gog && chmod +x /usr/local/bin/gog
 
 COPY --from=builder /usr/local/bin/zc /usr/local/bin/zc
 COPY docker/entrypoint-zc.sh /usr/local/bin/entrypoint-zc.sh
