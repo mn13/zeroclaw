@@ -633,10 +633,16 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
             status_fn: |_| IntegrationStatus::ComingSoon,
         },
         IntegrationEntry {
-            name: "Gmail",
-            description: "Email triggers & send",
+            name: "Google (GOGCLI)",
+            description: "Gmail, Drive, Calendar, Sheets & more",
             category: IntegrationCategory::ToolsAutomation,
-            status_fn: |_| IntegrationStatus::ComingSoon,
+            status_fn: |c| {
+                if c.google.enabled {
+                    IntegrationStatus::Active
+                } else {
+                    IntegrationStatus::Available
+                }
+            },
         },
         IntegrationEntry {
             name: "1Password",

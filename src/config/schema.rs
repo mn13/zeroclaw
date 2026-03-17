@@ -173,6 +173,10 @@ pub struct Config {
     #[serde(default)]
     pub composio: ComposioConfig,
 
+    /// Google Workspace integration via GOGCLI (`[google]`).
+    #[serde(default)]
+    pub google: GoogleConfig,
+
     /// Secrets encryption configuration (`[secrets]`).
     #[serde(default)]
     pub secrets: SecretsConfig,
@@ -1081,6 +1085,39 @@ impl Default for ComposioConfig {
             enabled: false,
             api_key: None,
             entity_id: default_entity_id(),
+        }
+    }
+}
+
+// ── Google (GOGCLI workspace integration) ───────────────────────
+
+/// Google Workspace integration via GOGCLI (`[google]` section).
+///
+/// When enabled, installs and auto-whitelists the `gog` CLI for Google
+/// Workspace access (Gmail, Drive, Calendar, Sheets, Docs, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GoogleConfig {
+    /// Enable Google Workspace integration via GOGCLI
+    #[serde(default, alias = "enable")]
+    pub enabled: bool,
+    /// OAuth client credentials JSON (stored encrypted when secrets.encrypt = true)
+    #[serde(default)]
+    pub oauth_client_credentials: Option<String>,
+    /// Linked Google accounts (e.g. ["user@gmail.com"])
+    #[serde(default)]
+    pub accounts: Vec<String>,
+    /// Auto-whitelist `gog` in allowed_commands when enabled. Default: `true`.
+    #[serde(default = "default_true")]
+    pub auto_whitelist_gog: bool,
+}
+
+impl Default for GoogleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            oauth_client_credentials: None,
+            accounts: Vec::new(),
+            auto_whitelist_gog: true,
         }
     }
 }
@@ -3869,6 +3906,7 @@ impl Default for Config {
             tunnel: TunnelConfig::default(),
             gateway: GatewayConfig::default(),
             composio: ComposioConfig::default(),
+            google: GoogleConfig::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             http_request: HttpRequestConfig::default(),
@@ -4329,6 +4367,11 @@ impl Config {
                 &store,
                 &mut config.composio.api_key,
                 "config.composio.api_key",
+            )?;
+            decrypt_optional_secret(
+                &store,
+                &mut config.google.oauth_client_credentials,
+                "config.google.oauth_client_credentials",
             )?;
 
             decrypt_optional_secret(
@@ -5176,6 +5219,11 @@ impl Config {
             &mut config_to_save.composio.api_key,
             "config.composio.api_key",
         )?;
+        encrypt_optional_secret(
+            &store,
+            &mut config_to_save.google.oauth_client_credentials,
+            "config.google.oauth_client_credentials",
+        )?;
 
         encrypt_optional_secret(
             &store,
@@ -5834,6 +5882,7 @@ default_temperature = 0.7
             tunnel: TunnelConfig::default(),
             gateway: GatewayConfig::default(),
             composio: ComposioConfig::default(),
+            google: GoogleConfig::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             http_request: HttpRequestConfig::default(),
@@ -6030,6 +6079,7 @@ tool_dispatcher = "xml"
             tunnel: TunnelConfig::default(),
             gateway: GatewayConfig::default(),
             composio: ComposioConfig::default(),
+            google: GoogleConfig::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             http_request: HttpRequestConfig::default(),

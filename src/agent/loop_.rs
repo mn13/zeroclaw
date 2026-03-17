@@ -2877,8 +2877,19 @@ pub async fn run(
     let observer: Arc<dyn Observer> = Arc::from(base_observer);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
+    let mut autonomy = config.autonomy.clone();
+    if config.google.enabled && config.google.auto_whitelist_gog {
+        if !autonomy.allowed_commands.iter().any(|c| c == "gog") {
+            autonomy.allowed_commands.push("gog".into());
+        }
+        for var in ["GOG_KEYRING_BACKEND", "GOG_KEYRING_PASSWORD", "GOG_ACCOUNT"] {
+            if !autonomy.shell_env_passthrough.iter().any(|v| v == var) {
+                autonomy.shell_env_passthrough.push(var.into());
+            }
+        }
+    }
     let security = Arc::new(SecurityPolicy::from_config(
-        &config.autonomy,
+        &autonomy,
         &config.workspace_dir,
     ));
 
@@ -3375,8 +3386,19 @@ pub async fn process_message(
         Arc::from(observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
+    let mut autonomy = config.autonomy.clone();
+    if config.google.enabled && config.google.auto_whitelist_gog {
+        if !autonomy.allowed_commands.iter().any(|c| c == "gog") {
+            autonomy.allowed_commands.push("gog".into());
+        }
+        for var in ["GOG_KEYRING_BACKEND", "GOG_KEYRING_PASSWORD", "GOG_ACCOUNT"] {
+            if !autonomy.shell_env_passthrough.iter().any(|v| v == var) {
+                autonomy.shell_env_passthrough.push(var.into());
+            }
+        }
+    }
     let security = Arc::new(SecurityPolicy::from_config(
-        &config.autonomy,
+        &autonomy,
         &config.workspace_dir,
     ));
     let mem: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage(

@@ -19,4 +19,9 @@ fi
 # Point ZeroClaw at our writable config directory.
 export ZEROCLAW_CONFIG_DIR="$ZCDIR"
 
+# GOGCLI: use file-based encrypted keyring (no OS keyring in Docker)
+export GOG_KEYRING_BACKEND=file
+# Password derived from the agent's gRPC secret for deterministic unlock
+export GOG_KEYRING_PASSWORD="${ZCGW_GRPC_SECRET:-zeroclaw}"
+
 exec "$@"

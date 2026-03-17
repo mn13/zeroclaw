@@ -23,8 +23,19 @@ pub async fn run(config: Config) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    let mut autonomy = config.autonomy.clone();
+    if config.google.enabled && config.google.auto_whitelist_gog {
+        if !autonomy.allowed_commands.iter().any(|c| c == "gog") {
+            autonomy.allowed_commands.push("gog".into());
+        }
+        for var in ["GOG_KEYRING_BACKEND", "GOG_KEYRING_PASSWORD", "GOG_ACCOUNT"] {
+            if !autonomy.shell_env_passthrough.iter().any(|v| v == var) {
+                autonomy.shell_env_passthrough.push(var.into());
+            }
+        }
+    }
     let security = Arc::new(SecurityPolicy::from_config(
-        &config.autonomy,
+        &autonomy,
         &config.workspace_dir,
     ));
 
@@ -49,7 +60,18 @@ pub async fn run(config: Config) -> Result<()> {
 }
 
 pub async fn execute_job_now(config: &Config, job: &CronJob) -> (bool, String) {
-    let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
+    let mut autonomy = config.autonomy.clone();
+    if config.google.enabled && config.google.auto_whitelist_gog {
+        if !autonomy.allowed_commands.iter().any(|c| c == "gog") {
+            autonomy.allowed_commands.push("gog".into());
+        }
+        for var in ["GOG_KEYRING_BACKEND", "GOG_KEYRING_PASSWORD", "GOG_ACCOUNT"] {
+            if !autonomy.shell_env_passthrough.iter().any(|v| v == var) {
+                autonomy.shell_env_passthrough.push(var.into());
+            }
+        }
+    }
+    let security = SecurityPolicy::from_config(&autonomy, &config.workspace_dir);
     execute_job_with_retry(config, &security, job).await
 }
 

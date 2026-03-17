@@ -145,6 +145,11 @@ async fn resolve_container(id: &str) -> anyhow::Result<String> {
     Ok(container_id)
 }
 
+/// Public wrapper around `resolve_container` for use by API endpoints.
+pub async fn resolve_container_public(id: &str) -> anyhow::Result<String> {
+    resolve_container(id).await
+}
+
 /// Pick the next available sequential port starting from base_port.
 /// Scans used_ports to find the first gap.
 pub fn next_available_port(base_port: u16, used_ports: &[u16]) -> u16 {

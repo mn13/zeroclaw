@@ -243,6 +243,23 @@ fn build_router(state: AppState) -> Router {
             "/api/instances/{id}/integrations/composio",
             get(api::get_composio).put(api::update_composio),
         )
+        // Integrations: Google (GOGCLI)
+        .route(
+            "/api/instances/{id}/integrations/google",
+            get(api::get_google).put(api::update_google),
+        )
+        .route(
+            "/api/instances/{id}/integrations/google/auth/init",
+            post(api::google_auth_init),
+        )
+        .route(
+            "/api/instances/{id}/integrations/google/auth/complete",
+            post(api::google_auth_complete),
+        )
+        .route(
+            "/api/instances/{id}/integrations/google/accounts/{email}",
+            delete(api::delete_google_account),
+        )
         // Cron Jobs
         .route(
             "/api/instances/{id}/cron",
