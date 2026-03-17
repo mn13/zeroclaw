@@ -151,15 +151,21 @@ pub async fn resolve_container_public(id: &str) -> anyhow::Result<String> {
 }
 
 /// Pick the next available sequential port starting from base_port.
-/// Scans used_ports to find the first gap.
+/// Checks both the known `used_ports` list and whether the port is
+/// actually free on the host (not bound by stale containers or other processes).
 pub fn next_available_port(base_port: u16, used_ports: &[u16]) -> u16 {
     let mut port = base_port;
     loop {
-        if !used_ports.contains(&port) {
+        if !used_ports.contains(&port) && is_port_free(port) {
             return port;
         }
-        port += 1;
+        port = port.checked_add(1).expect("port range exhausted");
     }
+}
+
+/// Check whether a TCP port is available by attempting to bind it.
+fn is_port_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
 /// Extract port number from a grpc_address like "http://localhost:50051".
@@ -189,6 +195,12 @@ pub async fn create_agent(
     docker_config: &DockerConfig,
 ) -> anyhow::Result<CreateAgentResult> {
     let container_name = id.to_string();
+
+    // Remove any stale container with the same name (stopped or dead)
+    let _ = Command::new("docker")
+        .args(["rm", "-f", &container_name])
+        .output()
+        .await;
 
     // Set up agent directory with config and data
     let _agent_dir = setup_agent_dir(&docker_config.agents_dir, id, agent_config_toml).await?;
