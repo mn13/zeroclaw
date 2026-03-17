@@ -2,11 +2,16 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getComposio,
   updateComposio,
+  getGoogle,
+  updateGoogle,
+  googleAuthInit,
+  googleAuthComplete,
+  deleteGoogleAccount,
   listSkills,
   updateSkill,
   deleteSkill,
 } from "../api";
-import type { ComposioConfig, SkillFile } from "../api";
+import type { ComposioConfig, GoogleConfig, SkillFile } from "../api";
 import { clipCorner } from "../theme";
 
 interface Props {
@@ -14,7 +19,7 @@ interface Props {
   toast: (msg: string, isError?: boolean) => void;
 }
 
-type Tab = "composio" | "skills";
+type Tab = "composio" | "google" | "skills";
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
@@ -191,6 +196,254 @@ function ComposioTab({ instanceId, toast }: Props) {
       </button>
       {dirty && (
         <span style={{ ...labelStyle, marginLeft: 12, color: "var(--amber)" }}>UNSAVED</span>
+      )}
+    </div>
+  );
+}
+
+// ── Google Tab ──
+
+function GoogleTab({ instanceId, toast }: Props) {
+  const [config, setConfig] = useState<GoogleConfig | null>(null);
+  const [enabled, setEnabled] = useState(false);
+  const [credentials, setCredentials] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authUrl, setAuthUrl] = useState("");
+  const [authCode, setAuthCode] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    getGoogle(instanceId)
+      .then((c) => {
+        setConfig(c);
+        setEnabled(c.enabled);
+        setCredentials("");
+        setDirty(false);
+      })
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Google config", true))
+      .finally(() => setLoading(false));
+  }, [instanceId, toast]);
+
+  useEffect(() => {
+    load();
+  }, [instanceId, load]);
+
+  const handleSave = useCallback(async () => {
+    try {
+      const data: { enabled?: boolean; oauth_client_credentials?: string } = { enabled };
+      if (credentials) data.oauth_client_credentials = credentials;
+      await updateGoogle(instanceId, data);
+      toast("Google config saved");
+      setDirty(false);
+      setCredentials("");
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Save failed", true);
+    }
+  }, [instanceId, enabled, credentials, toast, load]);
+
+  const handleAuthInit = useCallback(async () => {
+    if (!authEmail) return;
+    setAuthLoading(true);
+    try {
+      const resp = await googleAuthInit(instanceId, authEmail);
+      setAuthUrl(resp.auth_url);
+      toast("OAuth URL ready - open it in your browser");
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Auth init failed", true);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [instanceId, authEmail, toast]);
+
+  const handleAuthComplete = useCallback(async () => {
+    if (!authCode || !authEmail) return;
+    setAuthLoading(true);
+    try {
+      await googleAuthComplete(instanceId, authEmail, authCode);
+      toast(`Account ${authEmail} linked successfully`);
+      setAuthUrl("");
+      setAuthCode("");
+      setAuthEmail("");
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Auth completion failed", true);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [instanceId, authEmail, authCode, toast, load]);
+
+  const handleRemoveAccount = useCallback(async (email: string) => {
+    if (!confirm(`Remove Google account ${email}?`)) return;
+    try {
+      await deleteGoogleAccount(instanceId, email);
+      toast(`Removed ${email}`);
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Remove failed", true);
+    }
+  }, [instanceId, toast, load]);
+
+  if (loading && !config) {
+    return (
+      <div style={{ padding: 32, color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 14 }}>
+        Loading Google config...
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: 24, maxWidth: 600 }}>
+      {/* Header + enable toggle */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+        <span style={{ fontFamily: "Syne, sans-serif", fontSize: 16, fontWeight: 700, color: "var(--amber)" }}>
+          Google Workspace (GOGCLI)
+        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ ...labelStyle, marginBottom: 0 }}>{enabled ? "Enabled" : "Disabled"}</span>
+          <div
+            onClick={() => { setEnabled(!enabled); setDirty(true); }}
+            style={{
+              width: 40, height: 22, borderRadius: 11,
+              background: enabled ? "var(--amber)" : "var(--toggle-off)",
+              position: "relative", cursor: "pointer", transition: "background 0.2s",
+            }}
+          >
+            <div
+              style={{
+                width: 16, height: 16, borderRadius: "50%", background: "#fff",
+                position: "absolute", top: 3, left: enabled ? 21 : 3, transition: "left 0.2s",
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* OAuth Client Credentials */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ ...labelStyle, marginBottom: 4 }}>
+          OAuth Client Credentials {config?.has_credentials && <span style={{ color: "var(--success)" }}>(set)</span>}
+        </div>
+        <textarea
+          value={credentials}
+          onChange={(e) => { setCredentials(e.target.value); setDirty(true); }}
+          placeholder={config?.has_credentials ? "Leave empty to keep current credentials" : "Paste OAuth client credentials JSON"}
+          rows={4}
+          style={{ ...inputStyle, resize: "vertical" as const }}
+        />
+      </div>
+
+      <button
+        onClick={handleSave}
+        disabled={!dirty}
+        style={{
+          ...btnPrimary,
+          opacity: dirty ? 1 : 0.4,
+          cursor: dirty ? "pointer" : "default",
+        }}
+      >
+        Save
+      </button>
+      {dirty && (
+        <span style={{ ...labelStyle, marginLeft: 12, color: "var(--amber)" }}>UNSAVED</span>
+      )}
+
+      {/* Linked Accounts */}
+      <div style={{ marginTop: 32 }}>
+        <div style={{ ...labelStyle, marginBottom: 10 }}>Linked Accounts</div>
+        {config?.accounts && config.accounts.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+            {config.accounts.map((email) => (
+              <div
+                key={email}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                  clipPath: clipCorner(6),
+                }}
+              >
+                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-primary)" }}>
+                  {email}
+                </span>
+                <button onClick={() => handleRemoveAccount(email)} style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13, marginBottom: 16 }}>
+            No accounts linked yet.
+          </div>
+        )}
+      </div>
+
+      {/* Add Account */}
+      {enabled && config?.has_credentials && (
+        <div style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", clipPath: clipCorner(8) }}>
+          <div style={{ ...labelStyle, marginBottom: 8 }}>Link New Account</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <input
+              value={authEmail}
+              onChange={(e) => setAuthEmail(e.target.value)}
+              placeholder="user@gmail.com"
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <button
+              onClick={handleAuthInit}
+              disabled={!authEmail || authLoading}
+              style={{
+                ...btnPrimary,
+                opacity: authEmail && !authLoading ? 1 : 0.4,
+                cursor: authEmail && !authLoading ? "pointer" : "default",
+              }}
+            >
+              {authLoading ? "..." : "Start OAuth"}
+            </button>
+          </div>
+
+          {authUrl && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ ...labelStyle, marginBottom: 4 }}>1. Open this URL and authorize:</div>
+              <a
+                href={authUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "block", padding: "8px 12px", background: "var(--bg-input)",
+                  border: "1px solid var(--border)", color: "var(--amber)",
+                  fontFamily: "JetBrains Mono, monospace", fontSize: 11,
+                  wordBreak: "break-all", clipPath: clipCorner(6), marginBottom: 10,
+                }}
+              >
+                {authUrl}
+              </a>
+              <div style={{ ...labelStyle, marginBottom: 4 }}>2. Paste the authorization code:</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={authCode}
+                  onChange={(e) => setAuthCode(e.target.value)}
+                  placeholder="Paste authorization code or redirect URL here"
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <button
+                  onClick={handleAuthComplete}
+                  disabled={!authCode || authLoading}
+                  style={{
+                    ...btnPrimary,
+                    opacity: authCode && !authLoading ? 1 : 0.4,
+                    cursor: authCode && !authLoading ? "pointer" : "default",
+                  }}
+                >
+                  Complete
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -496,12 +749,16 @@ export default function Integrations({ instanceId, toast }: Props) {
         <button style={tabBtnStyle(tab === "composio")} onClick={() => setTab("composio")}>
           Composio
         </button>
+        <button style={tabBtnStyle(tab === "google")} onClick={() => setTab("google")}>
+          Google
+        </button>
         <button style={tabBtnStyle(tab === "skills")} onClick={() => setTab("skills")}>
           Skills
         </button>
       </div>
 
       {tab === "composio" && <ComposioTab key={instanceId} instanceId={instanceId} toast={toast} />}
+      {tab === "google" && <GoogleTab key={instanceId} instanceId={instanceId} toast={toast} />}
       {tab === "skills" && <SkillsTab key={instanceId} instanceId={instanceId} toast={toast} />}
     </div>
   );

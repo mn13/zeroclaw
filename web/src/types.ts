@@ -23,12 +23,19 @@ export type WsIncoming =
       history_length: number;
     };
 
+/** A single thinking step accumulated before a CLEAR event. */
+export interface ThinkingStep {
+  text: string;
+  toolCalls?: ToolCallInfo[];
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "error";
   content: string;
-  /** Progress/thinking text shown before the final answer (e.g. "Thinking..."). */
-  thinking?: string;
+  /** Thinking steps collected before the final answer. Each CLEAR adds one. */
+  steps?: ThinkingStep[];
+  /** Tool calls for the current (not-yet-cleared) round. */
   toolCalls?: ToolCallInfo[];
 }
 

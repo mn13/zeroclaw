@@ -286,6 +286,49 @@ export const updateComposio = (
     { method: "PUT", body: JSON.stringify(data) },
   );
 
+// ── Integrations: Google ──
+export interface GoogleConfig {
+  enabled: boolean;
+  has_credentials: boolean;
+  accounts: string[];
+  auto_whitelist_gog: boolean;
+}
+
+export interface GoogleAuthInitResponse {
+  auth_url: string;
+  email: string;
+}
+
+export const getGoogle = (id: string) =>
+  api<GoogleConfig>(`/api/instances/${encodeURIComponent(id)}/integrations/google`);
+
+export const updateGoogle = (
+  id: string,
+  data: { enabled?: boolean; oauth_client_credentials?: string; auto_whitelist_gog?: boolean },
+) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/google`,
+    { method: "PUT", body: JSON.stringify(data) },
+  );
+
+export const googleAuthInit = (id: string, email: string) =>
+  api<GoogleAuthInitResponse>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/google/auth/init`,
+    { method: "POST", body: JSON.stringify({ email }) },
+  );
+
+export const googleAuthComplete = (id: string, email: string, auth_code: string) =>
+  api<{ ok: boolean; email: string }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/google/auth/complete`,
+    { method: "POST", body: JSON.stringify({ email, auth_code }) },
+  );
+
+export const deleteGoogleAccount = (id: string, email: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/google/accounts/${encodeURIComponent(email)}`,
+    { method: "DELETE" },
+  );
+
 // ── Skills ──
 export interface SkillFile {
   name: string;
