@@ -125,6 +125,27 @@ function isSensitiveKey(key: string): boolean {
   );
 }
 
+/** Extract model names from the TOML model_routes inline array string. */
+function extractModelsFromToml(routesStr: string): Array<{ model: string; hint: string; provider: string }> {
+  const models: Array<{ model: string; hint: string; provider: string }> = [];
+  const blockRe = /\{[^}]*\}/g;
+  let blockMatch;
+  while ((blockMatch = blockRe.exec(routesStr)) !== null) {
+    const block = blockMatch[0];
+    const modelMatch = block.match(/model\s*=\s*"([^"]+)"/);
+    const hintMatch = block.match(/hint\s*=\s*"([^"]+)"/);
+    const providerMatch = block.match(/provider\s*=\s*"([^"]+)"/);
+    if (modelMatch) {
+      models.push({
+        model: modelMatch[1]!,
+        hint: hintMatch ? hintMatch[1]! : "",
+        provider: providerMatch ? providerMatch[1]! : "",
+      });
+    }
+  }
+  return models;
+}
+
 export default function Admin({ toast, instances: _instances, onInstancesChange }: Props) {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -759,6 +780,50 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
                           minWidth: 180,
                           flexShrink: 0,
                         };
+
+                        // default_model dropdown (extract models from model_routes)
+                        if (key === "default_model" && section === "general") {
+                          const routesStr = newConfig["general"]?.["model_routes"] || "";
+                          const models = extractModelsFromToml(routesStr);
+                          if (models.length > 0) {
+                            const modelNames = models.map((m) => m.model);
+                            if (val && !modelNames.includes(val)) modelNames.unshift(val);
+                            return (
+                              <div
+                                key={key}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 12,
+                                  padding: "6px 0",
+                                }}
+                              >
+                                <span style={fieldLabelStyle}>{key}</span>
+                                <select
+                                  value={val}
+                                  onChange={(e) => {
+                                    const newModel = e.target.value;
+                                    updateConfigField(section, key, newModel);
+                                    const route = models.find((m) => m.model === newModel);
+                                    if (route && route.provider) {
+                                      updateConfigField(section, "default_provider", route.provider);
+                                    }
+                                  }}
+                                  style={{ ...inputStyle, cursor: "pointer" }}
+                                >
+                                  {modelNames.map((m) => {
+                                    const route = models.find((r) => r.model === m);
+                                    return (
+                                      <option key={m} value={m}>
+                                        {m}{route ? ` (${route.hint})` : ""}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </div>
+                            );
+                          }
+                        }
 
                         // Boolean toggle
                         if (val === "true" || val === "false") {

@@ -25,6 +25,22 @@ function isSensitiveKey(key: string): boolean {
   );
 }
 
+/** Sections shown by default — everything else goes under "Advanced". */
+const PRIMARY_SECTIONS = new Set([
+  "default_provider",
+  "default_model",
+  "default_temperature",
+  "provider_timeout_secs",
+  "model_routes",
+  "embedding_routes",
+  "model_providers",
+  "memory",
+  "agent",
+  "autonomy",
+  "cron",
+  "secrets",
+]);
+
 export default function Config({ instanceId, toast }: Props) {
   const [savedConfig, setSavedConfig] = useState<ConfigData | null>(null);
   const [draft, setDraft] = useState<ConfigData | null>(null);
@@ -32,6 +48,7 @@ export default function Config({ instanceId, toast }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const dirty = useMemo(() => {
     if (!draft || !savedConfig) return false;
@@ -366,71 +383,133 @@ export default function Config({ instanceId, toast }: Props) {
         Configuration
       </h2>
 
-      {Object.entries(draft).map(([sectionKey, sectionValue]) => {
-        const isObject =
-          typeof sectionValue === "object" &&
-          sectionValue !== null &&
-          !Array.isArray(sectionValue);
-        const isCollapsed = collapsed[sectionKey] ?? false;
+      {(() => {
+        const entries = Object.entries(draft);
+        const primaryEntries = entries.filter(([key]) => PRIMARY_SECTIONS.has(key));
+        const advancedEntries = entries.filter(([key]) => !PRIMARY_SECTIONS.has(key));
 
-        return (
-          <div
-            key={sectionKey}
-            style={{
-              background: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              clipPath: clipCorner(10),
-              marginBottom: 12,
-              overflow: "hidden",
-            }}
-          >
+        const renderSection = ([sectionKey, sectionValue]: [string, ConfigValue]) => {
+          const isObject =
+            typeof sectionValue === "object" &&
+            sectionValue !== null &&
+            !Array.isArray(sectionValue);
+          const isCollapsed = collapsed[sectionKey] ?? false;
+
+          return (
             <div
-              onClick={() => toggleSection(sectionKey)}
+              key={sectionKey}
               style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "10px 16px",
-                cursor: "pointer",
-                userSelect: "none",
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                clipPath: clipCorner(10),
+                marginBottom: 12,
+                overflow: "hidden",
               }}
             >
-              <span
+              <div
+                onClick={() => toggleSection(sectionKey)}
                 style={{
-                  fontFamily: "Syne, sans-serif",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  textTransform: "uppercase",
-                  color: "var(--text-primary)",
-                  letterSpacing: 0.8,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                  userSelect: "none",
                 }}
               >
-                {sectionKey}
-              </span>
-              <span
-                style={{
-                  color: "var(--text-dim)",
-                  fontSize: 12,
-                  transition: "transform 0.2s",
-                  transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
-                }}
-              >
-                ▼
-              </span>
-            </div>
-
-            {!isCollapsed && (
-              <div style={{ padding: "4px 16px 12px" }}>
-                {isObject
-                  ? Object.entries(
-                      sectionValue as Record<string, ConfigValue>,
-                    ).map(([k, v]) => renderField(k, v, [sectionKey], 0))
-                  : renderField(sectionKey, sectionValue, [], 0)}
+                <span
+                  style={{
+                    fontFamily: "Syne, sans-serif",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    color: "var(--text-primary)",
+                    letterSpacing: 0.8,
+                  }}
+                >
+                  {sectionKey}
+                </span>
+                <span
+                  style={{
+                    color: "var(--text-dim)",
+                    fontSize: 12,
+                    transition: "transform 0.2s",
+                    transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                  }}
+                >
+                  ▼
+                </span>
               </div>
+
+              {!isCollapsed && (
+                <div style={{ padding: "4px 16px 12px" }}>
+                  {isObject
+                    ? Object.entries(
+                        sectionValue as Record<string, ConfigValue>,
+                      ).map(([k, v]) => renderField(k, v, [sectionKey], 0))
+                    : renderField(sectionKey, sectionValue, [], 0)}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        return (
+          <>
+            {primaryEntries.map(renderSection)}
+
+            {advancedEntries.length > 0 && (
+              <>
+                <div
+                  onClick={() => setShowAdvanced((prev) => !prev)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "12px 0",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    marginTop: 8,
+                    marginBottom: 4,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "Syne, sans-serif",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: 2,
+                      color: "var(--text-dim)",
+                    }}
+                  >
+                    Advanced
+                  </span>
+                  <span
+                    style={{
+                      color: "var(--text-dim)",
+                      fontSize: 11,
+                      transition: "transform 0.2s",
+                      transform: showAdvanced ? "rotate(0deg)" : "rotate(-90deg)",
+                    }}
+                  >
+                    ▼
+                  </span>
+                  <div
+                    style={{
+                      flex: 1,
+                      height: 1,
+                      background: "var(--border)",
+                    }}
+                  />
+                </div>
+
+                {showAdvanced && advancedEntries.map(renderSection)}
+              </>
             )}
-          </div>
+          </>
         );
-      })}
+      })()}
 
       <div
         style={{
