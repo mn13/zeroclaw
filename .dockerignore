@@ -54,6 +54,9 @@ LICENSE
 # Windsurf workflows
 .windsurf
 
+# Agent runtime data (config, history, credentials — never bake into images)
+docker/agents
+
 # Environment files (may contain secrets)
 .env
 .env.*
