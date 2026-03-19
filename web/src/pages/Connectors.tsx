@@ -5,8 +5,13 @@ import {
   getMcpServers,
   updateMcpServers,
   instanceAction,
+  getGoogle,
+  updateGoogle,
+  deleteGoogleAccount,
+  getComposio,
+  updateComposio,
 } from "../api";
-import type { ChannelSchema, ChannelField, McpServerConfig } from "../api";
+import type { ChannelSchema, ChannelField, McpServerConfig, GoogleConfig, GatewayGoogleAccount, ComposioConfig } from "../api";
 import { clipCorner } from "../theme";
 
 interface Props {
@@ -14,7 +19,7 @@ interface Props {
   toast: (msg: string, isError?: boolean) => void;
 }
 
-type Tab = "channels" | "mcp";
+type Tab = "integrations" | "channels" | "mcp";
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
@@ -202,6 +207,253 @@ function FieldRenderer({
         placeholder={field.help}
         style={inputStyle}
       />
+    </div>
+  );
+}
+
+// ── Integrations Assignment Tab ──
+
+function IntegrationsTab({ instanceId, toast }: Props) {
+  const [googleConfig, setGoogleConfig] = useState<GoogleConfig | null>(null);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(true);
+  const [assignLoading, setAssignLoading] = useState(false);
+
+  const [composioConfig, setComposioConfig] = useState<ComposioConfig | null>(null);
+  const [composioEnabled, setComposioEnabled] = useState(false);
+  const [composioLoading, setComposioLoading] = useState(true);
+
+  const loadGoogle = useCallback(() => {
+    setGoogleLoading(true);
+    getGoogle(instanceId)
+      .then((c) => {
+        setGoogleConfig(c);
+        setGoogleEnabled(c.enabled);
+      })
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Google config", true))
+      .finally(() => setGoogleLoading(false));
+  }, [instanceId, toast]);
+
+  const loadComposio = useCallback(() => {
+    setComposioLoading(true);
+    getComposio(instanceId)
+      .then((c) => {
+        setComposioConfig(c);
+        setComposioEnabled(c.enabled);
+      })
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Composio config", true))
+      .finally(() => setComposioLoading(false));
+  }, [instanceId, toast]);
+
+  useEffect(() => {
+    loadGoogle();
+    loadComposio();
+  }, [instanceId, loadGoogle, loadComposio]);
+
+  const handleGoogleToggle = useCallback(async () => {
+    const next = !googleEnabled;
+    setGoogleEnabled(next);
+    try {
+      await updateGoogle(instanceId, { enabled: next });
+      toast(next ? "Google enabled" : "Google disabled");
+      loadGoogle();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Save failed", true);
+      setGoogleEnabled(!next);
+    }
+  }, [instanceId, googleEnabled, toast, loadGoogle]);
+
+  const handleComposioToggle = useCallback(async () => {
+    const next = !composioEnabled;
+    setComposioEnabled(next);
+    try {
+      await updateComposio(instanceId, { enabled: next });
+      toast(next ? "Composio enabled" : "Composio disabled");
+      loadComposio();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Save failed", true);
+      setComposioEnabled(!next);
+    }
+  }, [instanceId, composioEnabled, toast, loadComposio]);
+
+  const handleUnassign = useCallback(async (email: string) => {
+    if (!confirm(`Unassign ${email} from this agent?`)) return;
+    try {
+      await deleteGoogleAccount(instanceId, email);
+      toast(`Unassigned ${email}`);
+      loadGoogle();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Unassign failed", true);
+    }
+  }, [instanceId, toast, loadGoogle]);
+
+  const handleAssign = useCallback(async (email: string) => {
+    setAssignLoading(true);
+    try {
+      await updateGoogle(instanceId, { enabled: true, assign_accounts: [email] });
+      toast(`Assigned ${email} to this agent`);
+      loadGoogle();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Assign failed", true);
+    } finally {
+      setAssignLoading(false);
+    }
+  }, [instanceId, toast, loadGoogle]);
+
+  const loading = googleLoading || composioLoading;
+  if (loading && !googleConfig && !composioConfig) {
+    return (
+      <div style={{ padding: 32, color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 14 }}>
+        Loading integrations...
+      </div>
+    );
+  }
+
+  const gatewayAccounts: GatewayGoogleAccount[] = googleConfig?.gateway_accounts ?? [];
+  const assignedEmails = googleConfig?.accounts ?? [];
+  const unassignedGateway = gatewayAccounts.filter((a) => !assignedEmails.includes(a.email));
+
+  return (
+    <div style={{ padding: 24, maxWidth: 600, flex: 1, overflowY: "auto" }}>
+      {/* Google Workspace Section */}
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <span style={{ fontFamily: "Syne, sans-serif", fontSize: 16, fontWeight: 700, color: "var(--amber)" }}>
+            Google Workspace
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ ...labelStyle, marginBottom: 0 }}>{googleEnabled ? "Enabled" : "Disabled"}</span>
+            <div
+              onClick={handleGoogleToggle}
+              style={{
+                width: 40, height: 22, borderRadius: 11,
+                background: googleEnabled ? "var(--amber)" : "var(--toggle-off)",
+                position: "relative", cursor: "pointer", transition: "background 0.2s",
+              }}
+            >
+              <div
+                style={{
+                  width: 16, height: 16, borderRadius: "50%", background: "#fff",
+                  position: "absolute", top: 3, left: googleEnabled ? 21 : 3, transition: "left 0.2s",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Assigned to this Agent */}
+        <div>
+          <div style={{ ...labelStyle, marginBottom: 10 }}>Assigned to this Agent</div>
+          {assignedEmails.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+              {assignedEmails.map((email) => (
+                <div
+                  key={email}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                    clipPath: clipCorner(6),
+                  }}
+                >
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-primary)" }}>
+                    {email}
+                  </span>
+                  <button onClick={() => handleUnassign(email)} style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}>
+                    Unassign
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13, marginBottom: 16 }}>
+              No accounts assigned to this agent.
+            </div>
+          )}
+        </div>
+
+        {/* Available Gateway Accounts (unassigned) */}
+        {unassignedGateway.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ ...labelStyle, marginBottom: 10 }}>Available Gateway Accounts</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {unassignedGateway.map((account) => (
+                <div
+                  key={account.email}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 12px", background: "var(--bg-input)", border: "1px dashed var(--border)",
+                    clipPath: clipCorner(6),
+                  }}
+                >
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-dim)" }}>
+                    {account.email}
+                  </span>
+                  <button
+                    onClick={() => handleAssign(account.email)}
+                    disabled={assignLoading}
+                    style={{
+                      ...btnPrimary,
+                      padding: "4px 10px",
+                      fontSize: 10,
+                      opacity: assignLoading ? 0.4 : 1,
+                      cursor: assignLoading ? "default" : "pointer",
+                    }}
+                  >
+                    {assignLoading ? "..." : "Assign"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {gatewayAccounts.length === 0 && assignedEmails.length === 0 && (
+          <div style={{
+            padding: 12, background: "var(--bg-input)",
+            border: "1px solid var(--border)", clipPath: clipCorner(6),
+            color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 12,
+          }}>
+            No gateway accounts available. Connect accounts on the gateway INTEGRATIONS page first.
+          </div>
+        )}
+      </div>
+
+      {/* Composio Section */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <span style={{ fontFamily: "Syne, sans-serif", fontSize: 16, fontWeight: 700, color: "var(--amber)" }}>
+            Composio
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ ...labelStyle, marginBottom: 0 }}>{composioEnabled ? "Enabled" : "Disabled"}</span>
+            <div
+              onClick={handleComposioToggle}
+              style={{
+                width: 40, height: 22, borderRadius: 11,
+                background: composioEnabled ? "var(--amber)" : "var(--toggle-off)",
+                position: "relative", cursor: "pointer", transition: "background 0.2s",
+              }}
+            >
+              <div
+                style={{
+                  width: 16, height: 16, borderRadius: "50%", background: "#fff",
+                  position: "absolute", top: 3, left: composioEnabled ? 21 : 3, transition: "left 0.2s",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {composioConfig && (
+          <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13 }}>
+            {composioConfig.has_api_key ? (
+              <span>API key configured. Entity ID: <code style={{ fontFamily: "JetBrains Mono, monospace", color: "var(--text-primary)" }}>{composioConfig.entity_id || "default"}</code></span>
+            ) : (
+              <span>API key not configured. Set it up on the gateway INTEGRATIONS page.</span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -852,7 +1104,7 @@ function McpServersTab({ instanceId, toast }: Props) {
 // ── Main Connectors Page ──
 
 export default function Connectors({ instanceId, toast }: Props) {
-  const [tab, setTab] = useState<Tab>("channels");
+  const [tab, setTab] = useState<Tab>("integrations");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
@@ -866,6 +1118,9 @@ export default function Connectors({ instanceId, toast }: Props) {
           minHeight: 40,
         }}
       >
+        <button style={tabBtnStyle(tab === "integrations")} onClick={() => setTab("integrations")}>
+          Integrations
+        </button>
         <button style={tabBtnStyle(tab === "channels")} onClick={() => setTab("channels")}>
           Channels
         </button>
@@ -875,6 +1130,7 @@ export default function Connectors({ instanceId, toast }: Props) {
       </div>
 
       {/* Use key={instanceId} to force full remount on agent switch */}
+      {tab === "integrations" && <IntegrationsTab key={instanceId} instanceId={instanceId} toast={toast} />}
       {tab === "channels" && <ChannelsTab key={instanceId} instanceId={instanceId} toast={toast} />}
       {tab === "mcp" && <McpServersTab key={instanceId} instanceId={instanceId} toast={toast} />}
     </div>

@@ -11,11 +11,11 @@ const viewTitles: Record<View, string> = {
   memory: "MEMORY",
   tools: "TOOLS",
   identity: "IDENTITY",
-  connectors: "CONNECTORS",
+  connectors: "CONNECTIONS",
   integrations: "INTEGRATIONS",
   cron: "CRON JOBS",
   status: "STATUS",
-  admin: "ADMIN PANEL",
+  admin: "ADMIN",
 };
 
 export function Header({ view }: HeaderProps) {

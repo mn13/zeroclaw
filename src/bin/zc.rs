@@ -35,11 +35,17 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // If a config path is provided, point ZEROCLAW_CONFIG_DIR at its parent
+    // If a config path is provided AND ZEROCLAW_CONFIG_DIR is not already set
+    // (e.g. by the Docker entrypoint), point ZEROCLAW_CONFIG_DIR at its parent
     // so that Config::load_or_init() picks it up.
+    // When the entrypoint has set ZEROCLAW_CONFIG_DIR to a writable location
+    // (like /data/.zeroclaw), we must not override it with the read-only mount
+    // parent (like /etc/zc/) — otherwise config writes will fail.
     if let Some(ref config_path) = cli.config {
-        if let Some(parent) = config_path.parent() {
-            std::env::set_var("ZEROCLAW_CONFIG_DIR", parent);
+        if std::env::var("ZEROCLAW_CONFIG_DIR").is_err() {
+            if let Some(parent) = config_path.parent() {
+                std::env::set_var("ZEROCLAW_CONFIG_DIR", parent);
+            }
         }
     }
 

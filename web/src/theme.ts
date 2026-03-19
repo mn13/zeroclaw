@@ -26,34 +26,35 @@ const themes = {
     "dropdown-hover": "#22222a",
   },
   light: {
-    amber: "#f59e0b",
-    "amber-dim": "#d97706",
-    "amber-glow": "rgba(245,158,11,0.12)",
-    "amber-bright": "#fbbf24",
-    "bg-dark": "#f5f5f5",
+    amber: "#d97706",
+    "amber-dim": "#b45309",
+    "amber-glow": "rgba(217,119,6,0.10)",
+    "amber-bright": "#f59e0b",
+    "bg-dark": "#fbfbfc",
     "bg-card": "#ffffff",
-    "bg-card-hover": "#f0f0f0",
-    border: "#e0e0e0",
-    "border-amber": "rgba(245,158,11,0.25)",
-    "text-primary": "#1a1a1a",
-    "text-dim": "#6b7280",
-    "bg-input": "#ffffff",
-    "bg-deep": "#f9f9f9",
-    "bg-sidebar": "#fafafa",
+    "bg-card-hover": "#f7f7f9",
+    border: "#e8e8ec",
+    "border-amber": "rgba(217,119,6,0.22)",
+    "text-primary": "#111111",
+    "text-dim": "#555e6b",
+    "bg-input": "#f7f8fa",
+    "bg-deep": "#ffffff",
+    "bg-sidebar": "#f8f9fb",
     "error-text": "#dc2626",
     "error-bg": "rgba(239,68,68,0.06)",
-    "success": "#22c55e",
-    "toggle-off": "#d1d5db",
-    "row-hover-bg": "rgba(0,0,0,0.02)",
-    "log-border": "rgba(0,0,0,0.05)",
+    "success": "#16a34a",
+    "toggle-off": "#c5c9d0",
+    "row-hover-bg": "rgba(0,0,0,0.025)",
+    "log-border": "rgba(0,0,0,0.06)",
     "bg-dropdown": "#ffffff",
-    "dropdown-hover": "#f3f4f6",
+    "dropdown-hover": "#f2f3f7",
   },
 } as const;
 
 export function applyTheme(mode: ThemeMode) {
   const palette = themes[mode];
   const root = document.documentElement;
+  root.setAttribute("data-theme", mode);
   for (const [key, value] of Object.entries(palette)) {
     root.style.setProperty(`--${key}`, value);
   }

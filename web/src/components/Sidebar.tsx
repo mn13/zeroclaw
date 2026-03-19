@@ -15,16 +15,20 @@ interface SidebarProps {
   onInstanceChange: (id: string) => void;
 }
 
-const navItems: { key: View; icon: string; label: string }[] = [
+const agentNavItems: { key: View; icon: string; label: string }[] = [
   { key: "chat", icon: "\u27E9_", label: "INTERACT" },
   { key: "config", icon: "\u2699", label: "CONFIG" },
   { key: "memory", icon: "\u25C7", label: "MEMORY" },
   { key: "tools", icon: "\u25A4", label: "TOOLS" },
   { key: "identity", icon: "\u2662", label: "IDENTITY" },
   { key: "connectors", icon: "\u2261", label: "CONNECT" },
-  { key: "integrations", icon: "\u2A01", label: "INTEGRATE" },
   { key: "cron", icon: "\u27F3", label: "CRON" },
   { key: "status", icon: "\u25CB", label: "STATUS" },
+];
+
+const gatewayNavItems: { key: View; icon: string; label: string }[] = [
+  { key: "integrations", icon: "\u2A01", label: "INTEGRATIONS" },
+  { key: "admin", icon: "\u2699", label: "ADMIN" },
 ];
 
 const healthColor: Record<string, string> = {
@@ -267,6 +271,70 @@ function InstanceSelector({
   );
 }
 
+function NavButton({
+  item,
+  active,
+  expanded,
+  onClick,
+}: {
+  item: { icon: string; label: string };
+  active: boolean;
+  expanded: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 14px",
+        background: active ? "var(--amber-glow)" : "transparent",
+        border: "none",
+        borderLeft: `2px solid ${active ? "var(--amber)" : "transparent"}`,
+        cursor: "pointer",
+        width: "100%",
+        textAlign: "left",
+        transition: "background 0.15s ease, border-color 0.15s ease",
+      }}
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.background = "var(--row-hover-bg)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = active ? "var(--amber-glow)" : "transparent";
+      }}
+    >
+      <span
+        style={{
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 16,
+          color: active ? "var(--amber)" : "var(--text-dim)",
+          minWidth: 28,
+          textAlign: "center",
+          lineHeight: 1,
+        }}
+      >
+        {item.icon}
+      </span>
+      <span
+        style={{
+          fontFamily: "'Syne', sans-serif",
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: 2,
+          color: active ? "var(--amber)" : "var(--text-dim)",
+          opacity: expanded ? 1 : 0,
+          transition: "opacity 0.2s ease",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {item.label}
+      </span>
+    </button>
+  );
+}
+
 export function Sidebar({
   view,
   onViewChange,
@@ -346,116 +414,41 @@ export function Sidebar({
         expanded={expanded}
       />
 
-      {/* Nav items */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2, padding: "8px 0" }}>
-        {navItems.map((item) => {
+      {/* Agent nav items */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2, padding: "8px 0", overflow: "hidden" }}>
+        {agentNavItems.map((item) => {
           const active = view === item.key;
           return (
-            <button
-              key={item.key}
-              onClick={() => onViewChange(item.key)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 14px",
-                background: active ? "var(--amber-glow)" : "transparent",
-                border: "none",
-                borderLeft: `2px solid ${active ? "var(--amber)" : "transparent"}`,
-                cursor: "pointer",
-                width: "100%",
-                textAlign: "left",
-                transition: "background 0.15s ease, border-color 0.15s ease",
-              }}
-              onMouseEnter={(e) => {
-                if (!active) {
-                  e.currentTarget.style.background = "var(--row-hover-bg)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = active ? "var(--amber-glow)" : "transparent";
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 16,
-                  color: active ? "var(--amber)" : "var(--text-dim)",
-                  minWidth: 28,
-                  textAlign: "center",
-                  lineHeight: 1,
-                }}
-              >
-                {item.icon}
-              </span>
-              <span
-                style={{
-                  fontFamily: "'Syne', sans-serif",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  letterSpacing: 2,
-                  color: active ? "var(--amber)" : "var(--text-dim)",
-                  opacity: expanded ? 1 : 0,
-                  transition: "opacity 0.2s ease",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {item.label}
-              </span>
-            </button>
+            <NavButton key={item.key} item={item} active={active} expanded={expanded} onClick={() => onViewChange(item.key)} />
           );
         })}
-      </div>
 
-      {/* Admin button — always visible */}
-      <div style={{ padding: "0 10px 4px" }}>
-        <button
-          onClick={() => onViewChange("admin")}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            width: "100%",
-            padding: "10px 6px",
-            background: view === "admin" ? "var(--amber-glow)" : "transparent",
-            border: "1px solid var(--border)",
-            clipPath: clipCorner(6),
-            cursor: "pointer",
-            transition: "background 0.15s",
-          }}
-          onMouseEnter={(e) => {
-            if (view !== "admin") e.currentTarget.style.background = "var(--row-hover-bg)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = view === "admin" ? "var(--amber-glow)" : "transparent";
-          }}
-        >
-          <span
-            style={{
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 14,
-              color: view === "admin" ? "var(--amber)" : "var(--text-dim)",
-              minWidth: 26,
-              textAlign: "center",
-            }}
-          >
-            ⚙
-          </span>
+        {/* Gateway divider */}
+        <div style={{ padding: "8px 14px 4px", display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
           {expanded && (
             <span
               style={{
-                fontFamily: "'Syne', sans-serif",
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: 2,
-                color: view === "admin" ? "var(--amber)" : "var(--text-dim)",
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 9,
+                color: "var(--text-dim)",
+                letterSpacing: 1.5,
                 whiteSpace: "nowrap",
               }}
             >
-              ADMIN
+              GATEWAY
             </span>
           )}
-        </button>
+          <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
+        </div>
+
+        {/* Gateway nav items */}
+        {gatewayNavItems.map((item) => {
+          const active = view === item.key;
+          return (
+            <NavButton key={item.key} item={item} active={active} expanded={expanded} onClick={() => onViewChange(item.key)} />
+          );
+        })}
       </div>
 
       {/* Health status */}

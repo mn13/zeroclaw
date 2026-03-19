@@ -615,9 +615,44 @@ async fn write_agent_config(
         let _ = tokio::fs::create_dir_all(parent).await;
     }
     let content = toml::to_string_pretty(val).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tokio::fs::write(&path, content)
+    tokio::fs::write(&path, &content)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Also sync to the data directory so changes are visible inside the container
+    // immediately (the entrypoint only copies on start, not during runtime).
+    let data_config = agent_config_fallback_path(state, id);
+    if let Some(parent) = data_config.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let _ = tokio::fs::write(&data_config, &content).await;
+
+    // Push the change to the running agent via gRPC for live hot-reload.
+    // Convert TOML → JSON for the gRPC UpdateConfigRequest.
+    // Best-effort: if the agent is unreachable, the host file is still updated
+    // and will take effect on next restart.
+    if let Ok(json_val) = toml_value_to_json(val) {
+        if let Ok(mut client) = state.registry.get_client(id).await {
+            let _ = client
+                .update_config(authed_request(
+                    proto::UpdateConfigRequest {
+                        partial_json: json_val.to_string(),
+                    },
+                    &state.grpc_secret,
+                ))
+                .await;
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert a TOML value tree to a serde_json::Value.
+fn toml_value_to_json(val: &toml::Value) -> Result<serde_json::Value, ()> {
+    // Serialize TOML → string → JSON is lossy for datetimes, but config
+    // values are strings/numbers/bools/arrays/tables which round-trip fine.
+    let json_str = serde_json::to_string(val).map_err(|_| ())?;
+    serde_json::from_str(&json_str).map_err(|_| ())
 }
 
 // ---------- Connectors ----------

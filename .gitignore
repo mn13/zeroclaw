@@ -24,6 +24,10 @@ docker/config/zcgw.toml
 .env.local
 .env.*.local
 
+# Local host-mode runtime state
+local/agents/
+local/zcgw.toml
+
 # Secret keys and credentials
 .secret_key
 *.key

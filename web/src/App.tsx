@@ -121,7 +121,7 @@ export function App() {
       case "connectors":
         return <Connectors instanceId={currentInstance} toast={showToast} />;
       case "integrations":
-        return <Integrations instanceId={currentInstance} toast={showToast} />;
+        return <Integrations toast={showToast} />;
       case "cron":
         return <Cron instanceId={currentInstance} toast={showToast} />;
       case "status":
@@ -153,7 +153,7 @@ export function App() {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <Header view={view} />
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {(currentInstance || view === "admin") ? (
+          {(currentInstance || view === "admin" || view === "integrations") ? (
             renderView()
           ) : (
             <div

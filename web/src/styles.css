@@ -22,6 +22,10 @@ body::after {
     radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.15) 100%),
     repeating-linear-gradient(0deg, transparent, transparent 23px, rgba(128,128,128,0.015) 23px, rgba(128,128,128,0.015) 24px);
 }
+/* Disable scanline/vignette overlay on light theme */
+[data-theme="light"] body::after {
+  display: none;
+}
 
 /* Cursor blink */
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
