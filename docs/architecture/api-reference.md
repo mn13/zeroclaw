@@ -472,6 +472,7 @@ Get Google integration status (GOGCLI-based OAuth).
 {
   "enabled": false,
   "has_credentials": false,
+  "has_redirect_host": false,
   "accounts": [],
   "auto_whitelist_gog": true
 }
@@ -480,7 +481,8 @@ Get Google integration status (GOGCLI-based OAuth).
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | boolean | Whether Google integration is active. |
-| `has_credentials` | boolean | Whether OAuth client credentials JSON has been provided. |
+| `has_credentials` | boolean | Whether `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` is set on the gateway. |
+| `has_redirect_host` | boolean | Whether `ZEROCLAW_GOOGLE_REDIRECT_HOST` is set on the gateway. |
 | `accounts` | string[] | List of authorized Google account emails. |
 | `auto_whitelist_gog` | boolean | Auto-whitelist Google domains for the agent. |
 
@@ -492,16 +494,17 @@ Update Google integration configuration.
 ```json
 {
   "enabled": true,
-  "oauth_client_credentials": "{...}",
   "auto_whitelist_gog": true
 }
 ```
 
-All fields are optional. The `oauth_client_credentials` JSON is also written to the agent's `google/client.json` file for the `gog` CLI.
+All fields are optional.
 
 ### `POST /api/instances/{id}/integrations/google/auth/init`
 
-Initiate Google OAuth flow for an account. Runs `gog auth add` inside the agent container and returns an authorization URL.
+Initiate the redirect-based Google OAuth flow. Writes the gateway's Google credentials to the agent container, starts GOG CLI's remote auth flow (step 1), and returns the Google consent URL. The frontend should redirect the browser to `auth_url`.
+
+Requires `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` and `ZEROCLAW_GOOGLE_REDIRECT_HOST` to be set on the gateway (returns `400` otherwise).
 
 **Request Body**:
 ```json
@@ -513,21 +516,17 @@ Initiate Google OAuth flow for an account. Runs `gog auth add` inside the agent 
 {"auth_url": "https://accounts.google.com/o/oauth2/...", "email": "user@example.com"}
 ```
 
-### `POST /api/instances/{id}/integrations/google/auth/complete`
+### `GET /oauth2/callback`
 
-Complete the OAuth flow by submitting the authorization code.
+**Authentication**: None (public endpoint — protected by unguessable OAuth `state` parameter)
 
-**Request Body**:
-```json
-{"email": "user@example.com", "auth_code": "4/0A..."}
-```
+Google redirects the browser here after the user grants consent. The gateway:
+1. Validates the `state` parameter against its pending-auth map
+2. Completes the token exchange via GOG CLI (step 2)
+3. Adds the email to the agent's `google.accounts` config
+4. Redirects the browser to `/integrations?google=success&email=<email>` (or `?google=error&message=<msg>` on failure)
 
-**Response** `200 OK`:
-```json
-{"ok": true, "email": "user@example.com"}
-```
-
-On success, the email is added to the `google.accounts` list in the agent's config.
+**Query Parameters** (set by Google): `code`, `state`, `error`
 
 ### `DELETE /api/instances/{id}/integrations/google/accounts/{email}`
 

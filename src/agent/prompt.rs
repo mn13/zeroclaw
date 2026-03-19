@@ -17,6 +17,8 @@ pub struct PromptContext<'a> {
     pub skills_prompt_mode: crate::config::SkillsPromptInjectionMode,
     pub identity_config: Option<&'a IdentityConfig>,
     pub dispatcher_instructions: &'a str,
+    /// Google accounts linked via GOG CLI (empty if Google integration is disabled).
+    pub google_accounts: &'a [String],
 }
 
 pub trait PromptSection: Send + Sync {
@@ -37,6 +39,7 @@ impl SystemPromptBuilder {
                 Box::new(ToolsSection),
                 Box::new(SafetySection),
                 Box::new(SkillsSection),
+                Box::new(GoogleSection),
                 Box::new(WorkspaceSection),
                 Box::new(DateTimeSection),
                 Box::new(RuntimeSection),
@@ -70,6 +73,7 @@ pub struct SkillsSection;
 pub struct WorkspaceSection;
 pub struct RuntimeSection;
 pub struct DateTimeSection;
+pub struct GoogleSection;
 
 impl PromptSection for IdentitySection {
     fn name(&self) -> &str {
@@ -206,6 +210,69 @@ impl PromptSection for DateTimeSection {
     }
 }
 
+impl PromptSection for GoogleSection {
+    fn name(&self) -> &str {
+        "google"
+    }
+
+    fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
+        if ctx.google_accounts.is_empty() {
+            return Ok(String::new());
+        }
+
+        let accounts = ctx
+            .google_accounts
+            .iter()
+            .map(|a| format!("- {a}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(format!(
+            r#"## Google Workspace Integration
+
+You have access to Google Workspace via the `gog` CLI tool (shell command). The following accounts are linked:
+{accounts}
+
+### Gmail
+
+- `gog gmail list "<query>" [--max N]` — Search emails using Gmail query syntax
+  - Queries: `"in:inbox"`, `"is:unread"`, `"newer_than:1d"`, `"from:user@example.com"`, `"subject:hello"`
+  - Combine: `"in:inbox is:unread newer_than:7d"`
+- `gog gmail read <message-id>` — Read a specific email by its ID (from list output)
+- `gog gmail send --to <email> --subject "<subject>" --body "<body>"` — Send an email
+  - Optional: `--cc <email>`, `--bcc <email>`, `--attach <path>`
+- `gog gmail send --reply-to-message-id <id> --body "<body>"` — Reply to an email
+  - Add `--reply-all` to reply to all recipients
+
+### Drive
+
+- `gog drive list [query]` — List files (optional search query)
+- `gog drive read <file-id>` — Download/read a file
+- `gog drive upload <local-path>` — Upload a file
+
+### Calendar
+
+- `gog calendar list [--from <date>] [--to <date>]` — List events in date range
+- `gog calendar create --title "<title>" --start "<datetime>" --end "<datetime>"` — Create event
+
+### Other services
+
+- `gog contacts list [query]` — List/search contacts
+- `gog sheets read <spreadsheet-id> [--range "<A1:B10>"]` — Read spreadsheet data
+- `gog docs read <document-id>` — Read a Google Doc
+
+### Important
+
+- `gog` is pre-installed and whitelisted. Call it directly via the shell tool.
+- Do NOT use `which`, `ls`, or path lookups to find it.
+- Do NOT use shell redirections (`>`, `<`, `2>&1`). Run commands plainly.
+- Always pass `--account {first_account}` if you get an account error.
+- Use `gog <service> --help` to discover additional flags."#,
+            first_account = ctx.google_accounts.first().unwrap_or(&String::new())
+        ))
+    }
+}
+
 fn inject_workspace_file(prompt: &mut String, workspace_dir: &Path, filename: &str) {
     let path = workspace_dir.join(filename);
     match std::fs::read_to_string(&path) {
@@ -300,6 +367,7 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: Some(&identity_config),
             dispatcher_instructions: "",
+            google_accounts: &[],
         };
 
         let section = IdentitySection;
@@ -328,6 +396,7 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "instr",
+            google_accounts: &[],
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
         assert!(prompt.contains("## Tools"));
@@ -363,6 +432,7 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "",
+            google_accounts: &[],
         };
 
         let output = SkillsSection.build(&ctx).unwrap();
@@ -401,6 +471,7 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Compact,
             identity_config: None,
             dispatcher_instructions: "",
+            google_accounts: &[],
         };
 
         let output = SkillsSection.build(&ctx).unwrap();
@@ -422,6 +493,7 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "instr",
+            google_accounts: &[],
         };
 
         let rendered = DateTimeSection.build(&ctx).unwrap();
@@ -460,6 +532,7 @@ mod tests {
             skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "",
+            google_accounts: &[],
         };
 
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();

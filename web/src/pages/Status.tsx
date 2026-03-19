@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { getStatus, clearHistory } from "../api";
-import type { StatusInfo } from "../api";
+import { getStatus, clearHistory, getModels, setDefaultModel } from "../api";
+import type { StatusInfo, ModelsInfo } from "../api";
 import { clipCorner } from "../theme";
 
 interface Props {
@@ -70,6 +70,9 @@ export default function Status({ instanceId, toast, onLogout }: Props) {
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>(readTokenUsage);
+  const [modelsInfo, setModelsInfo] = useState<ModelsInfo | null>(null);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [modelSaving, setModelSaving] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -77,8 +80,39 @@ export default function Status({ instanceId, toast, onLogout }: Props) {
       .then(setStatus)
       .catch((err) => toast(err.message, true))
       .finally(() => setLoading(false));
+    getModels(instanceId)
+      .then((m) => {
+        setModelsInfo(m);
+        setSelectedModel(m.default_model);
+      })
+      .catch(() => {/* models info is optional */});
     setTokenUsage(readTokenUsage());
   }, [instanceId, toast]);
+
+  const handleModelChange = useCallback(async (value: string) => {
+    setSelectedModel(value);
+    setModelSaving(true);
+    try {
+      // Find the provider for the selected model from model_routes
+      const route = modelsInfo?.model_routes.find((r) => r.model === value);
+      const provider = route?.provider;
+      const result = await setDefaultModel(instanceId, value, provider);
+      const msg = `Model set to ${value}` + (result.requires_restart ? " — restart required" : "");
+      toast(msg);
+      // Update local state immediately so provider display reflects the change
+      if (modelsInfo && provider) {
+        setModelsInfo({ ...modelsInfo, default_model: value, default_provider: provider });
+      }
+      // Reload status to reflect the change
+      getStatus(instanceId).then(setStatus).catch(() => {});
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Failed to set model", true);
+      // Revert selection
+      if (modelsInfo) setSelectedModel(modelsInfo.default_model);
+    } finally {
+      setModelSaving(false);
+    }
+  }, [instanceId, modelsInfo, toast]);
 
   useEffect(() => {
     load();
@@ -327,17 +361,84 @@ export default function Status({ instanceId, toast, onLogout }: Props) {
               display: "flex",
               gap: 32,
               flexWrap: "wrap",
+              alignItems: "flex-end",
             }}
           >
-            <div>
-              <div style={labelStyle}>Model</div>
-              <div style={valueSm}>{status.model}</div>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={labelStyle}>Default Model</div>
+              {modelsInfo && modelsInfo.model_routes.length > 0 ? (
+                <select
+                  value={selectedModel}
+                  onChange={(e) => handleModelChange(e.target.value)}
+                  disabled={modelSaving}
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    background: "var(--bg-input)",
+                    border: "1px solid var(--border)",
+                    color: "var(--amber)",
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    clipPath: clipCorner(6),
+                    outline: "none",
+                    cursor: modelSaving ? "wait" : "pointer",
+                    opacity: modelSaving ? 0.5 : 1,
+                    appearance: "none",
+                    WebkitAppearance: "none",
+                    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23f59e0b' d='M2 4l4 4 4-4'/%3E%3C/svg%3E")`,
+                    backgroundRepeat: "no-repeat",
+                    backgroundPosition: "right 10px center",
+                    paddingRight: 30,
+                  }}
+                >
+                  {/* Deduplicate: include all route models + current default if not in routes */}
+                  {(() => {
+                    const models = new Map<string, string>();
+                    if (modelsInfo.default_model && !modelsInfo.model_routes.find((r) => r.model === modelsInfo.default_model)) {
+                      models.set(modelsInfo.default_model, modelsInfo.default_provider);
+                    }
+                    for (const r of modelsInfo.model_routes) {
+                      models.set(r.model, r.provider);
+                    }
+                    return Array.from(models.entries()).map(([model, provider]) => (
+                      <option key={model} value={model}>
+                        {model} ({provider})
+                      </option>
+                    ));
+                  })()}
+                </select>
+              ) : (
+                <div style={valueSm}>{status.model}</div>
+              )}
             </div>
             <div>
               <div style={labelStyle}>Provider</div>
-              <div style={valueSm}>{status.provider}</div>
+              <div style={valueSm}>
+                {modelsInfo ? modelsInfo.default_provider || status.provider : status.provider}
+              </div>
             </div>
           </div>
+          {modelsInfo && modelsInfo.model_routes.length > 0 && (
+            <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {modelsInfo.model_routes.map((r) => (
+                <span
+                  key={r.hint}
+                  style={{
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: 10,
+                    padding: "3px 8px",
+                    background: r.model === selectedModel ? "var(--amber-glow)" : "var(--bg-input)",
+                    border: `1px solid ${r.model === selectedModel ? "var(--amber)" : "var(--border)"}`,
+                    color: r.model === selectedModel ? "var(--amber)" : "var(--text-dim)",
+                    clipPath: clipCorner(4),
+                  }}
+                >
+                  {r.hint}: {r.model}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

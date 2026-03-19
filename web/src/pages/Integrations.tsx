@@ -4,14 +4,15 @@ import {
   updateComposio,
   getGoogle,
   updateGoogle,
-  googleAuthInit,
-  googleAuthComplete,
+  gatewayGoogleAuthInit,
+  gatewayGoogleAuthComplete,
   deleteGoogleAccount,
+  deleteGatewayGoogleAccount,
   listSkills,
   updateSkill,
   deleteSkill,
 } from "../api";
-import type { ComposioConfig, GoogleConfig, SkillFile } from "../api";
+import type { ComposioConfig, GoogleConfig, GatewayGoogleAccount, SkillFile } from "../api";
 import { clipCorner } from "../theme";
 
 interface Props {
@@ -206,13 +207,12 @@ function ComposioTab({ instanceId, toast }: Props) {
 function GoogleTab({ instanceId, toast }: Props) {
   const [config, setConfig] = useState<GoogleConfig | null>(null);
   const [enabled, setEnabled] = useState(false);
-  const [credentials, setCredentials] = useState("");
-  const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
-  const [authUrl, setAuthUrl] = useState("");
-  const [authCode, setAuthCode] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [authUrl, setAuthUrl] = useState("");
+  const [callbackUrl, setCallbackUrl] = useState("");
+  const [assignLoading, setAssignLoading] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -220,8 +220,6 @@ function GoogleTab({ instanceId, toast }: Props) {
       .then((c) => {
         setConfig(c);
         setEnabled(c.enabled);
-        setCredentials("");
-        setDirty(false);
       })
       .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Google config", true))
       .finally(() => setLoading(false));
@@ -231,59 +229,89 @@ function GoogleTab({ instanceId, toast }: Props) {
     load();
   }, [instanceId, load]);
 
-  const handleSave = useCallback(async () => {
-    try {
-      const data: { enabled?: boolean; oauth_client_credentials?: string } = { enabled };
-      if (credentials) data.oauth_client_credentials = credentials;
-      await updateGoogle(instanceId, data);
-      toast("Google config saved");
-      setDirty(false);
-      setCredentials("");
+  // Check URL params for OAuth callback result on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const googleResult = params.get("google");
+    if (googleResult === "success") {
+      const email = params.get("email");
+      toast(email ? `Account ${email} linked successfully` : "Google account linked successfully");
+      window.history.replaceState({}, "", window.location.pathname);
       load();
-    } catch (err: unknown) {
-      toast(err instanceof Error ? err.message : "Save failed", true);
+    } else if (googleResult === "error") {
+      const message = params.get("message") || "OAuth flow failed";
+      toast(message, true);
+      window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [instanceId, enabled, credentials, toast, load]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleAuthInit = useCallback(async () => {
+  const handleConnect = useCallback(async () => {
     if (!authEmail) return;
     setAuthLoading(true);
     try {
-      const resp = await googleAuthInit(instanceId, authEmail);
+      const resp = await gatewayGoogleAuthInit(authEmail);
       setAuthUrl(resp.auth_url);
-      toast("OAuth URL ready - open it in your browser");
+      window.open(resp.auth_url, "_blank");
     } catch (err: unknown) {
-      toast(err instanceof Error ? err.message : "Auth init failed", true);
+      toast(err instanceof Error ? err.message : "Failed to start OAuth flow", true);
     } finally {
       setAuthLoading(false);
     }
-  }, [instanceId, authEmail, toast]);
+  }, [authEmail, toast]);
 
-  const handleAuthComplete = useCallback(async () => {
-    if (!authCode || !authEmail) return;
+  const handlePasteCallback = useCallback(async () => {
+    if (!callbackUrl) return;
     setAuthLoading(true);
     try {
-      await googleAuthComplete(instanceId, authEmail, authCode);
-      toast(`Account ${authEmail} linked successfully`);
+      const resp = await gatewayGoogleAuthComplete(callbackUrl, authEmail);
+      toast(`Account ${resp.email} linked successfully`);
       setAuthUrl("");
-      setAuthCode("");
+      setCallbackUrl("");
       setAuthEmail("");
       load();
     } catch (err: unknown) {
-      toast(err instanceof Error ? err.message : "Auth completion failed", true);
+      toast(err instanceof Error ? err.message : "Failed to complete OAuth", true);
     } finally {
       setAuthLoading(false);
     }
-  }, [instanceId, authEmail, authCode, toast, load]);
+  }, [callbackUrl, authEmail, toast, load]);
 
-  const handleRemoveAccount = useCallback(async (email: string) => {
-    if (!confirm(`Remove Google account ${email}?`)) return;
+  const handleRemoveGatewayAccount = useCallback(async (email: string) => {
+    const assignedTo = config?.gateway_accounts?.find((a) => a.email === email)?.assigned_to ?? [];
+    const msg = assignedTo.length > 0
+      ? `Remove ${email} from gateway and unassign from ${assignedTo.join(", ")}?`
+      : `Remove ${email} from gateway?`;
+    if (!confirm(msg)) return;
     try {
-      await deleteGoogleAccount(instanceId, email);
+      await deleteGatewayGoogleAccount(email);
       toast(`Removed ${email}`);
       load();
     } catch (err: unknown) {
       toast(err instanceof Error ? err.message : "Remove failed", true);
+    }
+  }, [config, toast, load]);
+
+  const handleUnassign = useCallback(async (email: string) => {
+    if (!confirm(`Unassign ${email} from this agent?`)) return;
+    try {
+      await deleteGoogleAccount(instanceId, email);
+      toast(`Unassigned ${email}`);
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Unassign failed", true);
+    }
+  }, [instanceId, toast, load]);
+
+  const handleAssign = useCallback(async (email: string) => {
+    setAssignLoading(true);
+    try {
+      await updateGoogle(instanceId, { enabled: true, assign_accounts: [email] });
+      toast(`Assigned ${email} to this agent`);
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Assign failed", true);
+    } finally {
+      setAssignLoading(false);
     }
   }, [instanceId, toast, load]);
 
@@ -295,6 +323,11 @@ function GoogleTab({ instanceId, toast }: Props) {
     );
   }
 
+  const oauthConfigured = config?.has_credentials && config?.has_redirect_host;
+  const gatewayAccounts: GatewayGoogleAccount[] = config?.gateway_accounts ?? [];
+  const assignedEmails = config?.accounts ?? [];
+  const unassignedGateway = gatewayAccounts.filter((a) => !assignedEmails.includes(a.email));
+
   return (
     <div style={{ padding: 24, maxWidth: 600 }}>
       {/* Header + enable toggle */}
@@ -305,7 +338,18 @@ function GoogleTab({ instanceId, toast }: Props) {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ ...labelStyle, marginBottom: 0 }}>{enabled ? "Enabled" : "Disabled"}</span>
           <div
-            onClick={() => { setEnabled(!enabled); setDirty(true); }}
+            onClick={async () => {
+              const next = !enabled;
+              setEnabled(next);
+              try {
+                await updateGoogle(instanceId, { enabled: next });
+                toast(next ? "Google enabled" : "Google disabled");
+                load();
+              } catch (err: unknown) {
+                toast(err instanceof Error ? err.message : "Save failed", true);
+                setEnabled(!next);
+              }
+            }}
             style={{
               width: 40, height: 22, borderRadius: 11,
               background: enabled ? "var(--amber)" : "var(--toggle-off)",
@@ -322,41 +366,25 @@ function GoogleTab({ instanceId, toast }: Props) {
         </div>
       </div>
 
-      {/* OAuth Client Credentials */}
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ ...labelStyle, marginBottom: 4 }}>
-          OAuth Client Credentials {config?.has_credentials && <span style={{ color: "var(--success)" }}>(set)</span>}
+      {/* OAuth not configured warning */}
+      {!oauthConfigured && (
+        <div style={{
+          padding: 12, background: "var(--bg-input)",
+          border: "1px solid var(--border)", clipPath: clipCorner(6),
+          color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13,
+          marginBottom: 24,
+        }}>
+          Google OAuth not configured. Set <code>ZEROCLAW_GOOGLE_CREDENTIALS_JSON</code> and{" "}
+          <code>ZEROCLAW_GOOGLE_REDIRECT_HOST</code> on the gateway.
         </div>
-        <textarea
-          value={credentials}
-          onChange={(e) => { setCredentials(e.target.value); setDirty(true); }}
-          placeholder={config?.has_credentials ? "Leave empty to keep current credentials" : "Paste OAuth client credentials JSON"}
-          rows={4}
-          style={{ ...inputStyle, resize: "vertical" as const }}
-        />
-      </div>
-
-      <button
-        onClick={handleSave}
-        disabled={!dirty}
-        style={{
-          ...btnPrimary,
-          opacity: dirty ? 1 : 0.4,
-          cursor: dirty ? "pointer" : "default",
-        }}
-      >
-        Save
-      </button>
-      {dirty && (
-        <span style={{ ...labelStyle, marginLeft: 12, color: "var(--amber)" }}>UNSAVED</span>
       )}
 
-      {/* Linked Accounts */}
-      <div style={{ marginTop: 32 }}>
-        <div style={{ ...labelStyle, marginBottom: 10 }}>Linked Accounts</div>
-        {config?.accounts && config.accounts.length > 0 ? (
+      {/* 1. Assigned to this Agent */}
+      <div>
+        <div style={{ ...labelStyle, marginBottom: 10 }}>Assigned to this Agent</div>
+        {assignedEmails.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
-            {config.accounts.map((email) => (
+            {assignedEmails.map((email) => (
               <div
                 key={email}
                 style={{
@@ -368,81 +396,139 @@ function GoogleTab({ instanceId, toast }: Props) {
                 <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-primary)" }}>
                   {email}
                 </span>
-                <button onClick={() => handleRemoveAccount(email)} style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}>
-                  Remove
+                <button onClick={() => handleUnassign(email)} style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}>
+                  Unassign
                 </button>
               </div>
             ))}
           </div>
         ) : (
           <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13, marginBottom: 16 }}>
-            No accounts linked yet.
+            No accounts assigned to this agent.
           </div>
         )}
       </div>
 
-      {/* Add Account */}
-      {enabled && config?.has_credentials && (
-        <div style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", clipPath: clipCorner(8) }}>
-          <div style={{ ...labelStyle, marginBottom: 8 }}>Link New Account</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+      {/* 2. Available Gateway Accounts (unassigned) */}
+      {unassignedGateway.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <div style={{ ...labelStyle, marginBottom: 10 }}>Available Gateway Accounts</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {unassignedGateway.map((account) => (
+              <div
+                key={account.email}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "8px 12px", background: "var(--bg-input)", border: "1px dashed var(--border)",
+                  clipPath: clipCorner(6),
+                }}
+              >
+                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-dim)" }}>
+                  {account.email}
+                </span>
+                <button
+                  onClick={() => handleAssign(account.email)}
+                  disabled={assignLoading}
+                  style={{
+                    ...btnPrimary,
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    opacity: assignLoading ? 0.4 : 1,
+                    cursor: assignLoading ? "default" : "pointer",
+                  }}
+                >
+                  {assignLoading ? "..." : "Assign"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. Connect New Account */}
+      {oauthConfigured && (
+        <div style={{ marginTop: 32, padding: 16, border: "1px solid var(--border)", clipPath: clipCorner(8) }}>
+          <div style={{ ...labelStyle, marginBottom: 8 }}>Connect New Account</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: authUrl ? 12 : 0 }}>
             <input
               value={authEmail}
               onChange={(e) => setAuthEmail(e.target.value)}
               placeholder="user@gmail.com"
               style={{ ...inputStyle, flex: 1 }}
+              disabled={!!authUrl}
             />
             <button
-              onClick={handleAuthInit}
-              disabled={!authEmail || authLoading}
+              onClick={handleConnect}
+              disabled={!authEmail || authLoading || !!authUrl}
               style={{
                 ...btnPrimary,
-                opacity: authEmail && !authLoading ? 1 : 0.4,
-                cursor: authEmail && !authLoading ? "pointer" : "default",
+                opacity: authEmail && !authLoading && !authUrl ? 1 : 0.4,
+                cursor: authEmail && !authLoading && !authUrl ? "pointer" : "default",
               }}
             >
-              {authLoading ? "..." : "Start OAuth"}
+              {authLoading ? "..." : "Connect"}
             </button>
           </div>
 
           {authUrl && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ ...labelStyle, marginBottom: 4 }}>1. Open this URL and authorize:</div>
-              <a
-                href={authUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "block", padding: "8px 12px", background: "var(--bg-input)",
-                  border: "1px solid var(--border)", color: "var(--amber)",
-                  fontFamily: "JetBrains Mono, monospace", fontSize: 11,
-                  wordBreak: "break-all", clipPath: clipCorner(6), marginBottom: 10,
-                }}
-              >
-                {authUrl}
-              </a>
-              <div style={{ ...labelStyle, marginBottom: 4 }}>2. Paste the authorization code:</div>
+            <div>
+              <div style={{ ...labelStyle, marginBottom: 4 }}>
+                After approving in Google, paste the redirect URL here:
+              </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <input
-                  value={authCode}
-                  onChange={(e) => setAuthCode(e.target.value)}
-                  placeholder="Paste authorization code or redirect URL here"
+                  value={callbackUrl}
+                  onChange={(e) => setCallbackUrl(e.target.value)}
+                  placeholder="Paste the full callback URL from your browser"
                   style={{ ...inputStyle, flex: 1 }}
                 />
                 <button
-                  onClick={handleAuthComplete}
-                  disabled={!authCode || authLoading}
+                  onClick={handlePasteCallback}
+                  disabled={!callbackUrl || authLoading}
                   style={{
                     ...btnPrimary,
-                    opacity: authCode && !authLoading ? 1 : 0.4,
-                    cursor: authCode && !authLoading ? "pointer" : "default",
+                    opacity: callbackUrl && !authLoading ? 1 : 0.4,
+                    cursor: callbackUrl && !authLoading ? "pointer" : "default",
                   }}
                 >
-                  Complete
+                  {authLoading ? "..." : "Complete"}
                 </button>
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Manage gateway accounts (collapsible, at the bottom) */}
+      {gatewayAccounts.length > 0 && (
+        <div style={{ marginTop: 32 }}>
+          <div style={{ ...labelStyle, marginBottom: 10, color: "var(--text-dim)" }}>Manage Gateway Accounts</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {gatewayAccounts.map((account) => (
+              <div
+                key={account.email}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "6px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                  clipPath: clipCorner(6), opacity: 0.7,
+                }}
+              >
+                <div>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "var(--text-dim)" }}>
+                    {account.email}
+                  </span>
+                  {account.assigned_to.length > 0 && (
+                    <span style={{ marginLeft: 8, fontSize: 10, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                      [{account.assigned_to.join(", ")}]
+                    </span>
+                  )}
+                </div>
+                <button onClick={() => handleRemoveGatewayAccount(account.email)} style={{ ...btnDanger, padding: "3px 8px", fontSize: 9 }}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

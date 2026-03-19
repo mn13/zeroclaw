@@ -8,17 +8,12 @@ pub struct GatewayConfig {
     pub instances: HashMap<String, InstanceConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DesiredState {
+    #[default]
     Running,
     Stopped,
-}
-
-impl Default for DesiredState {
-    fn default() -> Self {
-        DesiredState::Running
-    }
 }
 
 impl std::fmt::Display for DesiredState {

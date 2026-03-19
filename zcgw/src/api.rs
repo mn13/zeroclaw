@@ -4,7 +4,7 @@ use crate::registry::InstanceHealth;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -207,7 +207,10 @@ pub async fn update_config(
             &state.grpc_secret,
         ))
         .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        .map_err(|e| {
+            tracing::error!(instance = %id, error = %e, "update_config gRPC call failed");
+            StatusCode::BAD_GATEWAY
+        })?;
 
     let u = resp.into_inner();
     Ok(Json(serde_json::json!({
@@ -937,16 +940,536 @@ pub async fn update_composio(
 
 // ---------- Integrations: Google (GOGCLI) ----------
 
-/// Resolve the agent's google config directory on the host filesystem.
-fn agent_google_dir(state: &AppState, id: &str) -> std::path::PathBuf {
-    state
+/// Run a GOG CLI command locally on the gateway (not via docker exec).
+async fn run_gog_command(
+    gog_home: &std::path::Path,
+    args: &[&str],
+) -> Result<std::process::Output, std::io::Error> {
+    let xdg_config_home = gog_home
+        .parent()
+        .expect("gog_home must have a parent (.google/)");
+    tokio::process::Command::new("gog")
+        .args(args)
+        .env("GOG_KEYRING_BACKEND", "file")
+        .env("GOG_KEYRING_PASSWORD", "zeroclaw")
+        .env("XDG_CONFIG_HOME", xdg_config_home)
+        .output()
+        .await
+}
+
+/// Persist the Google accounts store to disk.
+async fn persist_google_accounts(state: &AppState) -> Result<(), StatusCode> {
+    let store = state.google_accounts.read().await;
+    let accounts_path = state
         .docker_config
         .agents_dir
-        .join(id)
+        .join(".google")
+        .join("accounts.json");
+    let json = serde_json::to_string_pretty(&*store).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(&accounts_path, json)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to persist google accounts store");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+/// Copy the gateway's GOG keyring files to an agent's data directory.
+async fn copy_keyring_to_agent(
+    agents_dir: &std::path::Path,
+    instance_id: &str,
+    gog_home: &std::path::Path,
+) -> Result<(), StatusCode> {
+    let src = gog_home;
+    let dst = agents_dir
+        .join(instance_id)
         .join("data")
         .join(".zeroclaw")
-        .join("google")
+        .join("gogcli");
+
+    tokio::fs::create_dir_all(dst.join("keyring"))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to create agent gogcli dir");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Copy credentials.json (client creds)
+    let src_creds = src.join("credentials.json");
+    if src_creds.exists() {
+        tokio::fs::copy(&src_creds, dst.join("credentials.json"))
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to copy credentials.json to agent");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+
+    // Copy all keyring files (encrypted tokens)
+    let src_keyring = src.join("keyring");
+    if src_keyring.exists() {
+        let mut entries = tokio::fs::read_dir(&src_keyring)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let dest_file = dst.join("keyring").join(entry.file_name());
+            tokio::fs::copy(entry.path(), dest_file).await.map_err(|e| {
+                tracing::error!(error = %e, "Failed to copy keyring file to agent");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+    }
+
+    Ok(())
 }
+
+/// Write/update the TOOLS.md file for an agent with Google Workspace instructions.
+async fn write_tools_md(agents_dir: &std::path::Path, instance_id: &str) -> Result<(), StatusCode> {
+    let workspace_dir = agents_dir
+        .join(instance_id)
+        .join("data")
+        .join(".zeroclaw")
+        .join("workspace");
+    tokio::fs::create_dir_all(&workspace_dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let tools_path = workspace_dir.join("TOOLS.md");
+    let google_section = r#"## Google Workspace (`gog` CLI)
+The `gog` command-line tool provides full access to Google Workspace services.
+It is pre-installed and whitelisted — call it directly via the shell tool.
+
+### Quick reference
+| Task | Command |
+|------|---------|
+| List recent emails | `gog gmail list "in:inbox" --max 10` |
+| Search emails | `gog gmail list "from:name@example.com newer_than:7d"` |
+| Read an email | `gog gmail read <message-id>` |
+| Send an email | `gog gmail send --to user@example.com --subject "Subject" --body "Body text"` |
+| Reply to email | `gog gmail send --reply-to-message-id <id> --body "Reply text"` |
+| List Drive files | `gog drive list` |
+| Read Drive file | `gog drive read <file-id>` |
+| Upload to Drive | `gog drive upload <local-path>` |
+| List calendar events | `gog calendar list --from 2026-03-18 --to 2026-03-25` |
+| Create calendar event | `gog calendar create --title "Meeting" --start "..." --end "..."` |
+
+### Rules
+- Do NOT use shell redirections (`>`, `<`, `2>&1`) with gog commands.
+- Do NOT attempt to locate the binary with `which`, `ls`, or path lookups.
+- If you get an account error, pass `--account <email>`.
+- Use `gog <command> --help` for full flag reference."#;
+
+    if tools_path.exists() {
+        let content = tokio::fs::read_to_string(&tools_path)
+            .await
+            .unwrap_or_default();
+        if content.contains("## Google Workspace") {
+            // Already has the section
+            return Ok(());
+        }
+        let updated = format!("{content}\n\n{google_section}\n");
+        tokio::fs::write(&tools_path, updated)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        let content = format!(
+            "# TOOLS.md\n\n## Built-in Tools\n\
+             - **shell** — Execute terminal commands (subject to security policy)\n\
+             - **file_read** — Read file contents\n\
+             - **file_write** — Write/edit files\n\
+             - **memory_store** — Save durable context to long-term memory\n\
+             - **memory_recall** — Search long-term memory\n\
+             - **memory_forget** — Remove a memory entry\n\n{google_section}\n"
+        );
+        tokio::fs::write(&tools_path, content)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    Ok(())
+}
+
+/// Ensure the google section in a TOML config has `enabled`, `auto_whitelist_gog`,
+/// and the given email in `accounts`.
+fn ensure_google_account_in_config(config: &mut toml::Value, email: &str) {
+    if let toml::Value::Table(ref mut t) = config {
+        let google = t
+            .entry("google")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if let toml::Value::Table(ref mut gt) = google {
+            gt.entry("enabled")
+                .or_insert_with(|| toml::Value::Boolean(true));
+            gt.entry("auto_whitelist_gog")
+                .or_insert_with(|| toml::Value::Boolean(true));
+            let accounts = gt
+                .entry("accounts")
+                .or_insert_with(|| toml::Value::Array(vec![]));
+            if let toml::Value::Array(ref mut arr) = accounts {
+                let email_val = toml::Value::String(email.to_string());
+                if !arr.contains(&email_val) {
+                    arr.push(email_val);
+                }
+            }
+        }
+    }
+}
+
+/// Remove an email from the google.accounts array in a TOML config.
+fn remove_google_account_from_config(config: &mut toml::Value, email: &str) {
+    if let toml::Value::Table(ref mut t) = config {
+        if let Some(toml::Value::Table(ref mut gt)) = t.get_mut("google") {
+            if let Some(toml::Value::Array(ref mut arr)) = gt.get_mut("accounts") {
+                arr.retain(|v| v.as_str() != Some(email));
+            }
+        }
+    }
+}
+
+// ── Gateway-level Google endpoints ──
+
+/// List all gateway-authenticated Google accounts.
+pub async fn list_google_accounts(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let store = state.google_accounts.read().await;
+    Json(serde_json::json!({ "accounts": store.accounts }))
+}
+
+#[derive(Deserialize)]
+pub struct GoogleAuthInitBody {
+    email: String,
+}
+
+/// Start OAuth flow at the gateway level (not per-instance).
+pub async fn google_auth_init(
+    State(state): State<AppState>,
+    Json(body): Json<GoogleAuthInitBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let _credentials_json = state.google_credentials_json.as_deref().ok_or_else(|| {
+        tracing::error!("ZEROCLAW_GOOGLE_CREDENTIALS_JSON not set");
+        StatusCode::BAD_REQUEST
+    })?;
+    let redirect_host = state.google_redirect_host.as_deref().ok_or_else(|| {
+        tracing::error!("ZEROCLAW_GOOGLE_REDIRECT_HOST not set");
+        StatusCode::BAD_REQUEST
+    })?;
+
+    // Run `gog auth add <email> --services user --remote --step 1 --redirect-uri <uri>` locally
+    let redirect_uri_arg = format!("http://{redirect_host}/oauth2/callback");
+    let output = run_gog_command(&state.gog_home, &[
+        "auth", "add", &body.email,
+        "--services", "user", "--remote", "--step", "1",
+        "--redirect-uri", &redirect_uri_arg,
+    ])
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "Failed to run gog auth init");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+
+    // Parse the auth URL from gog output
+    let auth_url = combined
+        .lines()
+        .find_map(|line| {
+            if line.starts_with("http") {
+                Some(line.trim().to_string())
+            } else {
+                line.strip_prefix("auth_url\t").map(|url| url.trim().to_string())
+            }
+        });
+
+    match auth_url {
+        Some(url) => {
+            let parsed = url::Url::parse(&url).map_err(|e| {
+                tracing::error!(error = %e, "Failed to parse auth URL: {url}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            let oauth_state = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "state")
+                .map(|(_, v)| v.to_string())
+                .ok_or_else(|| {
+                    tracing::error!("No state param found in auth URL: {url}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+
+            let redirect_uri = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "redirect_uri")
+                .map(|(_, v)| v.to_string())
+                .ok_or_else(|| {
+                    tracing::error!("No redirect_uri param found in auth URL: {url}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+
+            if let Ok(mut pending) = state.oauth_pending.lock() {
+                pending.insert(
+                    oauth_state,
+                    crate::app_state::OAuthPendingState {
+                        email: body.email.clone(),
+                        redirect_uri,
+                        created_at: std::time::Instant::now(),
+                    },
+                );
+            }
+
+            Ok(Json(serde_json::json!({
+                "auth_url": url,
+                "email": body.email,
+            })))
+        }
+        None => {
+            tracing::error!(stdout = %stdout, stderr = %stderr, "No auth URL found in gog output");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// OAuth2 callback handler — Google redirects the browser here after consent.
+/// This is an unauthenticated endpoint (protected by the unguessable `state` param).
+#[derive(Deserialize)]
+pub struct OAuthCallbackParams {
+    #[allow(dead_code)]
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+pub async fn google_oauth_callback(
+    State(app_state): State<AppState>,
+    Query(params): Query<OAuthCallbackParams>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    use axum::response::Html;
+
+    // If Google returned an error, show error page
+    if let Some(ref err) = params.error {
+        return Html(format!(
+            r#"<!DOCTYPE html><html><head><title>OAuth Error</title>
+<style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#fef2f2}}
+.card{{text-align:center;padding:2rem;border-radius:12px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1)}}
+h2{{color:#dc2626;margin:0 0 .5rem}}p{{color:#666;margin:0}}</style></head>
+<body><div class="card"><h2>OAuth Error</h2><p>{}</p>
+</div></body></html>"#,
+            err.replace('<', "&lt;").replace('>', "&gt;")
+        )).into_response();
+    }
+
+    let oauth_state = match params.state {
+        Some(ref s) if !s.is_empty() => s.clone(),
+        _ => {
+            return Html("<h2>OAuth Error</h2><p>Missing state parameter.</p>").into_response();
+        }
+    };
+
+    // Look up and consume the pending state (one-time use)
+    let pending = {
+        let mut map = match app_state.oauth_pending.lock() {
+            Ok(m) => m,
+            Err(_) => {
+                return Html("<h2>OAuth Error</h2><p>Internal error.</p>").into_response();
+            }
+        };
+        map.remove(&oauth_state)
+    };
+
+    let pending = match pending {
+        Some(p) => {
+            if p.created_at.elapsed() > std::time::Duration::from_secs(600) {
+                return Html("<h2>OAuth Error</h2><p>OAuth session expired. Please try again.</p>")
+                    .into_response();
+            }
+            p
+        }
+        None => {
+            return Html(
+                "<h2>OAuth Error</h2><p>Unknown or expired OAuth session. Please try again.</p>",
+            )
+            .into_response();
+        }
+    };
+
+    let email = &pending.email;
+
+    // Reconstruct the full callback URL using the redirect_uri from step 1
+    let raw_query = req.uri().query().unwrap_or_default();
+    let full_callback_url = format!("{}?{raw_query}", pending.redirect_uri);
+
+    // Run step 2 locally on the gateway
+    let output = match run_gog_command(&app_state.gog_home, &[
+        "auth", "add", email,
+        "--remote", "--step", "2",
+        "--auth-url", &full_callback_url,
+        "--redirect-uri", &pending.redirect_uri,
+    ])
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to run gog auth step 2");
+            let msg = urlencoding::encode("Failed to complete token exchange");
+            return Redirect::temporary(&format!("/integrations?google=error&message={msg}"))
+                .into_response();
+        }
+    };
+
+    if output.status.success() {
+        // Add account to the gateway store
+        {
+            let mut store = app_state.google_accounts.write().await;
+            if !store.accounts.iter().any(|a| a.email == *email) {
+                store.accounts.push(crate::app_state::GoogleAccount {
+                    email: email.clone(),
+                    assigned_to: vec![],
+                    authenticated_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+        }
+        let _ = persist_google_accounts(&app_state).await;
+
+        Html(format!(
+            r#"<!DOCTYPE html><html><head><title>Google Account Linked</title>
+<style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f0fdf4}}
+.card{{text-align:center;padding:2rem;border-radius:12px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1)}}
+h2{{color:#16a34a;margin:0 0 .5rem}}p{{color:#666;margin:0}}</style></head>
+<body><div class="card"><h2>Account Linked</h2>
+<p><strong>{email}</strong> connected to the gateway.</p>
+<p style="margin-top:1rem;font-size:.9rem">You can close this tab and return to the dashboard.</p>
+</div></body></html>"#
+        ))
+        .into_response()
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!(stderr = %stderr, "gog auth step 2 failed");
+        Html(format!(
+            r#"<!DOCTYPE html><html><head><title>OAuth Error</title>
+<style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#fef2f2}}
+.card{{text-align:center;padding:2rem;border-radius:12px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1);max-width:500px}}
+h2{{color:#dc2626;margin:0 0 .5rem}}p{{color:#666;margin:0}}</style></head>
+<body><div class="card"><h2>OAuth Error</h2>
+<p>Token exchange failed. Please try again from the Integrations page.</p>
+<details style="margin-top:1rem;text-align:left;font-size:.85rem"><summary>Details</summary><pre>{}</pre></details>
+</div></body></html>"#,
+            stderr.replace('<', "&lt;").replace('>', "&gt;")
+        ))
+        .into_response()
+    }
+}
+
+/// Manual callback URL submission — user pastes the full redirect URL.
+#[derive(Deserialize)]
+pub struct GoogleAuthCompleteBody {
+    callback_url: String,
+    email: String,
+}
+
+pub async fn google_auth_complete(
+    State(app_state): State<AppState>,
+    Json(body): Json<GoogleAuthCompleteBody>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let redirect_host = app_state.google_redirect_host.as_deref().ok_or_else(|| {
+        tracing::error!("ZEROCLAW_GOOGLE_REDIRECT_HOST not set");
+        StatusCode::BAD_REQUEST
+    })?;
+    let redirect_uri = format!("http://{redirect_host}/oauth2/callback");
+
+    let parsed = url::Url::parse(&body.callback_url).map_err(|e| {
+        tracing::error!(error = %e, "Invalid callback URL");
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let full_callback_url = format!("{redirect_uri}?{}", parsed.query().unwrap_or_default());
+
+    // Consume the in-memory pending state (best-effort cleanup)
+    if let Some(oauth_state) = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.to_string())
+    {
+        if let Ok(mut map) = app_state.oauth_pending.lock() {
+            map.remove(&oauth_state);
+        }
+    }
+
+    // Run step 2 locally on the gateway
+    let output = run_gog_command(&app_state.gog_home, &[
+        "auth", "add", &body.email,
+        "--remote", "--step", "2",
+        "--auth-url", &full_callback_url,
+        "--redirect-uri", &redirect_uri,
+    ])
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "Failed to run gog auth step 2");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if output.status.success() {
+        // Add to gateway store
+        {
+            let mut store = app_state.google_accounts.write().await;
+            if !store.accounts.iter().any(|a| a.email == body.email) {
+                store.accounts.push(crate::app_state::GoogleAccount {
+                    email: body.email.clone(),
+                    assigned_to: vec![],
+                    authenticated_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+        }
+        persist_google_accounts(&app_state).await?;
+
+        Ok(Json(serde_json::json!({
+            "ok": true,
+            "email": body.email,
+        })))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!(stderr = %stderr, "gog auth step 2 failed");
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
+
+/// Delete a Google account from the gateway and all assigned agents.
+pub async fn delete_google_account_global(
+    State(state): State<AppState>,
+    Path(email): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let assigned_to = {
+        let store = state.google_accounts.read().await;
+        store
+            .accounts
+            .iter()
+            .find(|a| a.email == email)
+            .map(|a| a.assigned_to.clone())
+            .unwrap_or_default()
+    };
+
+    // Remove from each assigned agent's config
+    for agent_id in &assigned_to {
+        if let Ok(mut config) = read_agent_config(&state, agent_id).await {
+            remove_google_account_from_config(&mut config, &email);
+            let _ = write_agent_config(&state, agent_id, &config).await;
+        }
+    }
+
+    // Remove from gateway store
+    {
+        let mut store = state.google_accounts.write().await;
+        store.accounts.retain(|a| a.email != email);
+    }
+    persist_google_accounts(&state).await?;
+
+    // Clean from gateway keyring (best-effort)
+    let _ = run_gog_command(&state.gog_home, &["auth", "remove", &email]).await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Per-instance Google endpoints ──
 
 pub async fn get_google(
     State(state): State<AppState>,
@@ -959,11 +1482,8 @@ pub async fn get_google(
         .and_then(|c| c.get("enabled"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let has_credentials = google
-        .and_then(|c| c.get("oauth_client_credentials"))
-        .and_then(|v| v.as_str())
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
+    let has_credentials = state.google_credentials_json.is_some();
+    let has_redirect_host = state.google_redirect_host.is_some();
     let accounts: Vec<String> = google
         .and_then(|c| c.get("accounts"))
         .and_then(|v| v.as_array())
@@ -978,19 +1498,26 @@ pub async fn get_google(
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
+    let gateway_accounts = {
+        let store = state.google_accounts.read().await;
+        store.accounts.clone()
+    };
+
     Ok(Json(serde_json::json!({
         "enabled": enabled,
         "has_credentials": has_credentials,
+        "has_redirect_host": has_redirect_host,
         "accounts": accounts,
         "auto_whitelist_gog": auto_whitelist_gog,
+        "gateway_accounts": gateway_accounts,
     })))
 }
 
 #[derive(Deserialize)]
 pub struct UpdateGoogleBody {
     enabled: Option<bool>,
-    oauth_client_credentials: Option<String>,
     auto_whitelist_gog: Option<bool>,
+    assign_accounts: Option<Vec<String>>,
 }
 
 pub async fn update_google(
@@ -1008,12 +1535,6 @@ pub async fn update_google(
             if let Some(enabled) = body.enabled {
                 gt.insert("enabled".to_string(), toml::Value::Boolean(enabled));
             }
-            if let Some(ref creds) = body.oauth_client_credentials {
-                gt.insert(
-                    "oauth_client_credentials".to_string(),
-                    toml::Value::String(creds.clone()),
-                );
-            }
             if let Some(auto_wl) = body.auto_whitelist_gog {
                 gt.insert(
                     "auto_whitelist_gog".to_string(),
@@ -1023,170 +1544,88 @@ pub async fn update_google(
         }
     }
 
-    // Write credentials JSON to agent's google dir for gog CLI
-    if body.oauth_client_credentials.is_some() {
-        let google_dir = agent_google_dir(&state, &id);
-        let _ = tokio::fs::create_dir_all(&google_dir).await;
-        let client_path = google_dir.join("client.json");
-        if let Some(ref creds) = body.oauth_client_credentials {
-            let _ = tokio::fs::write(&client_path, creds).await;
+    // Handle account assignment from gateway
+    if let Some(ref assign_accounts) = body.assign_accounts {
+        // Validate all emails exist in gateway store
+        {
+            let store = state.google_accounts.read().await;
+            for email in assign_accounts {
+                if !store.accounts.iter().any(|a| &a.email == email) {
+                    tracing::error!(email = %email, "Account not found in gateway store");
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+            }
         }
+
+        // Copy keyring to agent
+        copy_keyring_to_agent(
+            &state.docker_config.agents_dir,
+            &id,
+            &state.gog_home,
+        )
+        .await?;
+
+        // Write GOG config.json with default_account
+        let gogcli_dir = state
+            .docker_config
+            .agents_dir
+            .join(&id)
+            .join("data")
+            .join(".zeroclaw")
+            .join("gogcli");
+        if let Some(first_email) = assign_accounts.first() {
+            let gog_config = serde_json::json!({ "default_account": first_email });
+            let _ = tokio::fs::write(
+                gogcli_dir.join("config.json"),
+                serde_json::to_string_pretty(&gog_config).unwrap_or_default(),
+            )
+            .await;
+        }
+
+        // Update agent config with all accounts
+        for email in assign_accounts {
+            ensure_google_account_in_config(&mut config, email);
+        }
+
+        // Write TOOLS.md
+        write_tools_md(&state.docker_config.agents_dir, &id).await?;
+
+        // Update assigned_to in gateway store
+        {
+            let mut store = state.google_accounts.write().await;
+            for account in &mut store.accounts {
+                if assign_accounts.contains(&account.email)
+                    && !account.assigned_to.contains(&id)
+                {
+                    account.assigned_to.push(id.clone());
+                }
+            }
+        }
+        persist_google_accounts(&state).await?;
     }
 
     write_agent_config(&state, &id, &config).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-#[derive(Deserialize)]
-pub struct GoogleAuthInitBody {
-    email: String,
-}
-
-pub async fn google_auth_init(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-    Json(body): Json<GoogleAuthInitBody>,
-) -> Result<impl IntoResponse, StatusCode> {
-    use tokio::process::Command;
-
-    // Resolve the container and run gog auth init
-    let container = crate::docker::resolve_container_public(&id)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-
-    // Run `gog auth add <email> --services user --manual` and capture the auth URL
-    let output = Command::new("docker")
-        .args([
-            "exec",
-            &container,
-            "gog",
-            "auth",
-            "add",
-            &body.email,
-            "--services",
-            "user",
-            "--manual",
-        ])
-        .output()
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to run gog auth init");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}\n{stderr}");
-
-    // Parse the auth URL from gog output (it typically prints a URL to visit)
-    let auth_url = combined
-        .lines()
-        .find(|line| line.starts_with("http"))
-        .map(|s| s.trim().to_string());
-
-    match auth_url {
-        Some(url) => Ok(Json(serde_json::json!({
-            "auth_url": url,
-            "email": body.email,
-        }))),
-        None => {
-            tracing::error!(stdout = %stdout, stderr = %stderr, "No auth URL found in gog output");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-#[derive(Deserialize)]
-pub struct GoogleAuthCompleteBody {
-    email: String,
-    auth_code: String,
-}
-
-pub async fn google_auth_complete(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(body): Json<GoogleAuthCompleteBody>,
-) -> Result<impl IntoResponse, StatusCode> {
-    use tokio::process::Command;
-
-    let container = crate::docker::resolve_container_public(&id)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-
-    // Run gog auth complete with the auth code piped via stdin
-    let mut child = Command::new("docker")
-        .args(["exec", "-i", &container, "gog", "auth", "callback"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to spawn gog auth callback");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(body.auth_code.as_bytes()).await;
-        let _ = stdin.write_all(b"\n").await;
-        drop(stdin);
-    }
-
-    let output = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
-        .await
-        .map_err(|_| StatusCode::GATEWAY_TIMEOUT)?
-        .map_err(|e| {
-            tracing::error!(error = %e, "gog auth callback failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    if output.status.success() {
-        // Add the account to config
-        let mut config = read_agent_config(&state, &id).await?;
-        if let toml::Value::Table(ref mut t) = config {
-            let google = t
-                .entry("google")
-                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-            if let toml::Value::Table(ref mut gt) = google {
-                let accounts = gt
-                    .entry("accounts")
-                    .or_insert_with(|| toml::Value::Array(vec![]));
-                if let toml::Value::Array(ref mut arr) = accounts {
-                    let email_val = toml::Value::String(body.email.clone());
-                    if !arr.contains(&email_val) {
-                        arr.push(email_val);
-                    }
-                }
-            }
-        }
-        write_agent_config(&state, &id, &config).await?;
-
-        Ok(Json(serde_json::json!({
-            "ok": true,
-            "email": body.email,
-        })))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!(stderr = %stderr, "gog auth callback failed");
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
-    }
-}
-
+/// Unassign a Google account from a specific agent (does NOT remove from gateway).
 pub async fn delete_google_account(
     State(state): State<AppState>,
     Path((id, email)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let mut config = read_agent_config(&state, &id).await?;
+    remove_google_account_from_config(&mut config, &email);
+    write_agent_config(&state, &id, &config).await?;
 
-    if let toml::Value::Table(ref mut t) = config {
-        if let Some(toml::Value::Table(ref mut gt)) = t.get_mut("google") {
-            if let Some(toml::Value::Array(ref mut arr)) = gt.get_mut("accounts") {
-                arr.retain(|v| v.as_str() != Some(&email));
-            }
+    // Update assigned_to in gateway store
+    {
+        let mut store = state.google_accounts.write().await;
+        if let Some(account) = store.accounts.iter_mut().find(|a| a.email == email) {
+            account.assigned_to.retain(|aid| aid != &id);
         }
     }
+    persist_google_accounts(&state).await?;
 
-    write_agent_config(&state, &id, &config).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

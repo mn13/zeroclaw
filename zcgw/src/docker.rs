@@ -145,11 +145,6 @@ async fn resolve_container(id: &str) -> anyhow::Result<String> {
     Ok(container_id)
 }
 
-/// Public wrapper around `resolve_container` for use by API endpoints.
-pub async fn resolve_container_public(id: &str) -> anyhow::Result<String> {
-    resolve_container(id).await
-}
-
 /// Pick the next available sequential port starting from base_port.
 /// Checks both the known `used_ports` list and whether the port is
 /// actually free on the host (not bound by stale containers or other processes).
@@ -238,7 +233,7 @@ pub async fn create_agent(
         "-v".to_string(),
         format!("{}:/data", host_data.display()),
         "-v".to_string(),
-        format!("{}:/etc/zc/config.toml:ro", host_config.display()),
+        format!("{}:/etc/zc/config.toml", host_config.display()),
     ];
 
     // Publish host port

@@ -37,6 +37,7 @@ pub struct Agent {
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
+    google_accounts: Vec<String>,
 }
 
 pub struct AgentBuilder {
@@ -58,6 +59,7 @@ pub struct AgentBuilder {
     classification_config: Option<crate::config::QueryClassificationConfig>,
     available_hints: Option<Vec<String>>,
     route_model_by_hint: Option<HashMap<String, String>>,
+    google_accounts: Option<Vec<String>>,
 }
 
 impl AgentBuilder {
@@ -81,6 +83,7 @@ impl AgentBuilder {
             classification_config: None,
             available_hints: None,
             route_model_by_hint: None,
+            google_accounts: None,
         }
     }
 
@@ -180,6 +183,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn google_accounts(mut self, google_accounts: Vec<String>) -> Self {
+        self.google_accounts = Some(google_accounts);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let tools = self
             .tools
@@ -223,6 +231,7 @@ impl AgentBuilder {
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
+            google_accounts: self.google_accounts.unwrap_or_default(),
         })
     }
 }
@@ -342,6 +351,11 @@ impl Agent {
             ))
             .skills_prompt_mode(config.skills.prompt_injection_mode)
             .auto_save(config.memory.auto_save)
+            .google_accounts(if config.google.enabled {
+                config.google.accounts.clone()
+            } else {
+                Vec::new()
+            })
             .build()
     }
 
@@ -382,6 +396,7 @@ impl Agent {
             skills_prompt_mode: self.skills_prompt_mode,
             identity_config: Some(&self.identity_config),
             dispatcher_instructions: &instructions,
+            google_accounts: &self.google_accounts,
         };
         self.prompt_builder.build(&ctx)
     }

@@ -97,6 +97,37 @@ export const updateConfig = (id: string, data: Record<string, unknown>) =>
     { method: "PUT", body: JSON.stringify(data) },
   );
 
+// ── Models ──
+export interface ModelRoute {
+  hint: string;
+  provider: string;
+  model: string;
+}
+
+export interface ModelsInfo {
+  default_model: string;
+  default_provider: string;
+  model_routes: ModelRoute[];
+}
+
+/** Extract available models from instance config. */
+export async function getModels(id: string): Promise<ModelsInfo> {
+  const cfg = await getConfig(id);
+  const routes = (cfg.model_routes as ModelRoute[] | undefined) ?? [];
+  return {
+    default_model: (cfg.default_model as string) ?? "",
+    default_provider: (cfg.default_provider as string) ?? "",
+    model_routes: routes,
+  };
+}
+
+/** Set the default model (and optionally provider) on the instance. */
+export function setDefaultModel(id: string, model: string, provider?: string) {
+  const data: Record<string, unknown> = { default_model: model };
+  if (provider !== undefined) data.default_provider = provider;
+  return updateConfig(id, data);
+}
+
 // ── Tools ──
 export interface ToolInfo {
   name: string;
@@ -287,11 +318,19 @@ export const updateComposio = (
   );
 
 // ── Integrations: Google ──
+export interface GatewayGoogleAccount {
+  email: string;
+  assigned_to: string[];
+  authenticated_at: string;
+}
+
 export interface GoogleConfig {
   enabled: boolean;
   has_credentials: boolean;
+  has_redirect_host: boolean;
   accounts: string[];
   auto_whitelist_gog: boolean;
+  gateway_accounts: GatewayGoogleAccount[];
 }
 
 export interface GoogleAuthInitResponse {
@@ -299,28 +338,39 @@ export interface GoogleAuthInitResponse {
   email: string;
 }
 
+// Gateway-level Google endpoints
+export const listGatewayGoogleAccounts = () =>
+  api<{ accounts: GatewayGoogleAccount[] }>("/api/admin/google/accounts");
+
+export const gatewayGoogleAuthInit = (email: string) =>
+  api<GoogleAuthInitResponse>("/api/admin/google/auth/init", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+
+export const gatewayGoogleAuthComplete = (callback_url: string, email: string) =>
+  api<{ ok: boolean; email: string }>("/api/admin/google/auth/complete", {
+    method: "POST",
+    body: JSON.stringify({ callback_url, email }),
+  });
+
+export const deleteGatewayGoogleAccount = (email: string) =>
+  api<{ ok: boolean }>(
+    `/api/admin/google/accounts/${encodeURIComponent(email)}`,
+    { method: "DELETE" },
+  );
+
+// Per-instance Google endpoints
 export const getGoogle = (id: string) =>
   api<GoogleConfig>(`/api/instances/${encodeURIComponent(id)}/integrations/google`);
 
 export const updateGoogle = (
   id: string,
-  data: { enabled?: boolean; oauth_client_credentials?: string; auto_whitelist_gog?: boolean },
+  data: { enabled?: boolean; auto_whitelist_gog?: boolean; assign_accounts?: string[] },
 ) =>
   api<{ ok: boolean }>(
     `/api/instances/${encodeURIComponent(id)}/integrations/google`,
     { method: "PUT", body: JSON.stringify(data) },
-  );
-
-export const googleAuthInit = (id: string, email: string) =>
-  api<GoogleAuthInitResponse>(
-    `/api/instances/${encodeURIComponent(id)}/integrations/google/auth/init`,
-    { method: "POST", body: JSON.stringify({ email }) },
-  );
-
-export const googleAuthComplete = (id: string, email: string, auth_code: string) =>
-  api<{ ok: boolean; email: string }>(
-    `/api/instances/${encodeURIComponent(id)}/integrations/google/auth/complete`,
-    { method: "POST", body: JSON.stringify({ email, auth_code }) },
   );
 
 export const deleteGoogleAccount = (id: string, email: string) =>

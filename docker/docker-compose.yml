@@ -19,6 +19,8 @@ services:
       VENICE_API_KEY: "${VENICE_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ZEROCLAW_GOOGLE_CREDENTIALS_JSON: "${ZEROCLAW_GOOGLE_CREDENTIALS_JSON:-}"
+      ZEROCLAW_GOOGLE_REDIRECT_HOST: "${ZEROCLAW_GOOGLE_REDIRECT_HOST:-}"
     volumes:
       - ./config/zcgw.toml:/etc/zcgw/config.toml
       - ./config/zc-venice.toml:/etc/zcgw/zc-template.toml:ro

@@ -22,6 +22,14 @@ RUN apt-get update && \
 
 COPY --from=builder /usr/local/bin/zcgw /usr/local/bin/zcgw
 
+# Install GOG CLI for gateway-level Google OAuth
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    curl -fsSL "https://github.com/steipete/gogcli/releases/download/v0.12.0/gogcli_0.12.0_linux_amd64.tar.gz" \
+    | tar xz -C /usr/local/bin gog && chmod +x /usr/local/bin/gog && \
+    apt-get purge -y curl && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
 # Run as root to access Docker socket (required for container management).
 # The gateway manages agent containers via the Docker API.
 EXPOSE 8080

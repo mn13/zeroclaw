@@ -121,4 +121,9 @@ mod tests {
     fn test_is_not_public_ws() {
         assert!(!is_public("/ws/chat"));
     }
+
+    #[test]
+    fn test_is_public_oauth_callback() {
+        assert!(is_public("/oauth2/callback"));
+    }
 }

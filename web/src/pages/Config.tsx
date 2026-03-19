@@ -60,18 +60,20 @@ export default function Config({ instanceId, toast }: Props) {
 
   const updateField = useCallback(
     (path: string[], value: ConfigValue) => {
-      if (!draft) return;
-      const next = deepClone(draft);
-      let cursor: Record<string, ConfigValue> = next;
-      for (let i = 0; i < path.length - 1; i++) {
-        const key = path[i]!;
-        cursor = cursor[key] as Record<string, ConfigValue>;
-      }
-      const lastKey = path[path.length - 1]!;
-      cursor[lastKey] = value;
-      setDraft(next);
+      setDraft((prev) => {
+        if (!prev) return prev;
+        const next = deepClone(prev);
+        let cursor: Record<string, ConfigValue> = next;
+        for (let i = 0; i < path.length - 1; i++) {
+          const key = path[i]!;
+          cursor = cursor[key] as Record<string, ConfigValue>;
+        }
+        const lastKey = path[path.length - 1]!;
+        cursor[lastKey] = value;
+        return next;
+      });
     },
-    [draft],
+    [],
   );
 
   const handleSave = useCallback(async () => {
@@ -261,6 +263,65 @@ export default function Config({ instanceId, toast }: Props) {
 
     // string or fallback
     const strVal = value == null ? "" : String(value);
+
+    // Render default_model as a dropdown when model_routes are available
+    if (key === "default_model" && draft) {
+      const routes = draft.model_routes as Array<{ hint: string; provider: string; model: string }> | undefined;
+      if (routes && routes.length > 0) {
+        const models = routes.map((r) => r.model);
+        // Include the current value if it's not in routes
+        if (strVal && !models.includes(strVal)) models.unshift(strVal);
+        return (
+          <div key={key} style={rowStyle}>
+            <span style={labelStyle}>{key}</span>
+            <select
+              value={strVal}
+              onChange={(e) => {
+                const newModel = e.target.value;
+                updateField(fullPath, newModel);
+                // Also update default_provider to match the route's provider
+                const route = routes.find((r) => r.model === newModel);
+                if (route) updateField(["default_provider"], route.provider);
+              }}
+              style={{ ...inputStyle, cursor: "pointer" }}
+            >
+              {models.map((m) => {
+                const route = routes.find((r) => r.model === m);
+                return (
+                  <option key={m} value={m}>
+                    {m}{route ? ` (${route.hint})` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        );
+      }
+    }
+
+    // Render default_provider as a dropdown when model_routes are available
+    if (key === "default_provider" && draft) {
+      const routes = draft.model_routes as Array<{ provider: string }> | undefined;
+      if (routes && routes.length > 0) {
+        const providers = [...new Set(routes.map((r) => r.provider))];
+        if (strVal && !providers.includes(strVal)) providers.unshift(strVal);
+        return (
+          <div key={key} style={rowStyle}>
+            <span style={labelStyle}>{key}</span>
+            <select
+              value={strVal}
+              onChange={(e) => updateField(fullPath, e.target.value)}
+              style={{ ...inputStyle, cursor: "pointer" }}
+            >
+              {providers.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+        );
+      }
+    }
+
     return (
       <div key={key} style={rowStyle}>
         <span style={labelStyle}>{key}</span>

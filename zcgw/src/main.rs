@@ -77,6 +77,14 @@ async fn main() -> anyhow::Result<()> {
     let auth_token = std::env::var("ZCGW_AUTH_TOKEN").unwrap_or_default();
     let grpc_secret = std::env::var("ZCGW_GRPC_SECRET").unwrap_or_default();
 
+    // Google OAuth redirect-flow env vars (gateway-level, never exposed to users)
+    let google_credentials_json = std::env::var("ZEROCLAW_GOOGLE_CREDENTIALS_JSON")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let google_redirect_host = std::env::var("ZEROCLAW_GOOGLE_REDIRECT_HOST")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     if auth_token.is_empty() {
         tracing::warn!("ZCGW_AUTH_TOKEN not set — API endpoints are unprotected");
     }
@@ -152,6 +160,54 @@ async fn main() -> anyhow::Result<()> {
     // Ensure agents directory exists
     tokio::fs::create_dir_all(&docker_config.agents_dir).await?;
 
+    // Initialize gateway-level GOG home directory and Google accounts store
+    let gog_home = docker_config.agents_dir.join(".google").join("gogcli");
+    tokio::fs::create_dir_all(&gog_home).await?;
+
+    let accounts_path = docker_config.agents_dir.join(".google").join("accounts.json");
+    let google_accounts = if accounts_path.exists() {
+        match tokio::fs::read_to_string(&accounts_path).await {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load google accounts store");
+                app_state::GoogleAccountsStore::default()
+            }
+        }
+    } else {
+        app_state::GoogleAccountsStore::default()
+    };
+    let google_accounts = Arc::new(tokio::sync::RwLock::new(google_accounts));
+
+    // If google credentials are configured, set them up for the gateway's GOG CLI
+    if let Some(ref creds_json) = google_credentials_json {
+        let creds_path = docker_config.agents_dir.join(".google").join("credentials_tmp.json");
+        if let Err(e) = tokio::fs::write(&creds_path, creds_json).await {
+            tracing::warn!(error = %e, "failed to write google credentials for gateway GOG");
+        } else {
+            let xdg_config_home = docker_config.agents_dir.join(".google");
+            let output = tokio::process::Command::new("gog")
+                .args(["auth", "credentials", &creds_path.to_string_lossy()])
+                .env("GOG_KEYRING_BACKEND", "file")
+                .env("GOG_KEYRING_PASSWORD", "zeroclaw")
+                .env("XDG_CONFIG_HOME", &xdg_config_home)
+                .output()
+                .await;
+            match output {
+                Ok(o) if o.status.success() => {
+                    info!("gateway GOG credentials loaded");
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    tracing::warn!(stderr = %stderr, "gog auth credentials returned non-zero (may already be loaded)");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "gog binary not available — Google OAuth will not work at gateway level");
+                }
+            }
+            let _ = tokio::fs::remove_file(&creds_path).await;
+        }
+    }
+
     let registry = Arc::new(registry::InstanceRegistry::new(
         config.instances.clone(),
         grpc_secret.clone(),
@@ -163,6 +219,8 @@ async fn main() -> anyhow::Result<()> {
 
     registry.spawn_health_loop();
 
+    let oauth_pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+
     let state = AppState {
         registry,
         auth_token,
@@ -170,7 +228,24 @@ async fn main() -> anyhow::Result<()> {
         started_at: chrono::Utc::now(),
         config_path,
         docker_config,
+        google_credentials_json,
+        google_redirect_host,
+        oauth_pending: oauth_pending.clone(),
+        gog_home,
+        google_accounts,
     };
+
+    // Background task: prune expired OAuth pending entries (older than 10 minutes) every 60s.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(600);
+            if let Ok(mut pending) = oauth_pending.lock() {
+                pending.retain(|_, v| v.created_at > cutoff);
+            }
+        }
+    });
 
     let app = build_router(state);
 
@@ -243,18 +318,28 @@ fn build_router(state: AppState) -> Router {
             "/api/instances/{id}/integrations/composio",
             get(api::get_composio).put(api::update_composio),
         )
-        // Integrations: Google (GOGCLI)
+        // Integrations: Google (GOGCLI) — gateway-level
         .route(
-            "/api/instances/{id}/integrations/google",
-            get(api::get_google).put(api::update_google),
+            "/api/admin/google/accounts",
+            get(api::list_google_accounts),
         )
         .route(
-            "/api/instances/{id}/integrations/google/auth/init",
+            "/api/admin/google/auth/init",
             post(api::google_auth_init),
         )
         .route(
-            "/api/instances/{id}/integrations/google/auth/complete",
+            "/api/admin/google/auth/complete",
             post(api::google_auth_complete),
+        )
+        .route("/oauth2/callback", get(api::google_oauth_callback))
+        .route(
+            "/api/admin/google/accounts/{email}",
+            delete(api::delete_google_account_global),
+        )
+        // Integrations: Google — per-instance
+        .route(
+            "/api/instances/{id}/integrations/google",
+            get(api::get_google).put(api::update_google),
         )
         .route(
             "/api/instances/{id}/integrations/google/accounts/{email}",

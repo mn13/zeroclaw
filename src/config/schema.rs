@@ -1100,9 +1100,6 @@ pub struct GoogleConfig {
     /// Enable Google Workspace integration via GOGCLI
     #[serde(default, alias = "enable")]
     pub enabled: bool,
-    /// OAuth client credentials JSON (stored encrypted when secrets.encrypt = true)
-    #[serde(default)]
-    pub oauth_client_credentials: Option<String>,
     /// Linked Google accounts (e.g. ["user@gmail.com"])
     #[serde(default)]
     pub accounts: Vec<String>,
@@ -1115,7 +1112,6 @@ impl Default for GoogleConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            oauth_client_credentials: None,
             accounts: Vec::new(),
             auto_whitelist_gog: true,
         }
@@ -4370,12 +4366,6 @@ impl Config {
             )?;
             decrypt_optional_secret(
                 &store,
-                &mut config.google.oauth_client_credentials,
-                "config.google.oauth_client_credentials",
-            )?;
-
-            decrypt_optional_secret(
-                &store,
                 &mut config.browser.computer_use.api_key,
                 "config.browser.computer_use.api_key",
             )?;
@@ -5219,12 +5209,6 @@ impl Config {
             &mut config_to_save.composio.api_key,
             "config.composio.api_key",
         )?;
-        encrypt_optional_secret(
-            &store,
-            &mut config_to_save.google.oauth_client_credentials,
-            "config.google.oauth_client_credentials",
-        )?;
-
         encrypt_optional_secret(
             &store,
             &mut config_to_save.browser.computer_use.api_key,

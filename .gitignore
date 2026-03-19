@@ -20,6 +20,7 @@ docker-compose.override.yml
 # Docker local state
 .zeroclaw-docker/
 docker/agents/
+docker/config/zcgw.toml
 .env.local
 .env.*.local
 

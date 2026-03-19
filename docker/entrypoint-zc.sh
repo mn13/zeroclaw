@@ -24,4 +24,18 @@ export GOG_KEYRING_BACKEND=file
 # Password derived from the agent's gRPC secret for deterministic unlock
 export GOG_KEYRING_PASSWORD="${ZCGW_GRPC_SECRET:-zeroclaw}"
 
+# Persist GOG config/keyring on the /data volume so tokens survive container recreation.
+GOG_DATA="$ZCDIR/gogcli"
+mkdir -p "$GOG_DATA" 2>/dev/null || true
+GOG_DEFAULT="/root/.config/gogcli"
+if [ ! -L "$GOG_DEFAULT" ]; then
+    mkdir -p "$(dirname "$GOG_DEFAULT")" 2>/dev/null || true
+    # Move any existing data (e.g. from a fresh auth) to persistent storage
+    if [ -d "$GOG_DEFAULT" ]; then
+        cp -a "$GOG_DEFAULT/." "$GOG_DATA/" 2>/dev/null || true
+        rm -rf "$GOG_DEFAULT"
+    fi
+    ln -sf "$GOG_DATA" "$GOG_DEFAULT"
+fi
+
 exec "$@"
