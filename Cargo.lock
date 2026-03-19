@@ -7937,6 +7937,7 @@ dependencies = [
  "anyhow",
  "axum 0.8.8",
  "chrono",
+ "cron",
  "futures-util",
  "prost 0.13.5",
  "rusqlite",

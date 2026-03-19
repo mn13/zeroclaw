@@ -58,6 +58,11 @@ always_ask = []
 allowed_roots = []
 non_cli_excluded_tools = []
 
+# ── HTTP Request ───────────────────────────────────────────
+[http_request]
+enabled = true
+allowed_domains = ["*"]
+
 # ── Cron ────────────────────────────────────────────────────
 [cron]
 enabled = true

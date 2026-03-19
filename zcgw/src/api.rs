@@ -8,6 +8,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use tonic::metadata::MetadataValue;
 use tokio_stream::StreamExt;
 
@@ -1360,7 +1361,7 @@ h2{{color:#dc2626;margin:0 0 .5rem}}p{{color:#666;margin:0}}</style></head>
                 store.accounts.push(crate::app_state::GoogleAccount {
                     email: email.clone(),
                     assigned_to: vec![],
-                    authenticated_at: chrono::Utc::now().to_rfc3339(),
+                    authenticated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 });
             }
         }
@@ -1451,7 +1452,7 @@ pub async fn google_auth_complete(
                 store.accounts.push(crate::app_state::GoogleAccount {
                     email: body.email.clone(),
                     assigned_to: vec![],
-                    authenticated_at: chrono::Utc::now().to_rfc3339(),
+                    authenticated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 });
             }
         }
@@ -1875,7 +1876,28 @@ pub async fn create_cron_job(
 
     let job_id = uuid::Uuid::new_v4().to_string();
     let job_id_clone = job_id.clone();
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now();
+    let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    // Compute next_run from the cron expression.
+    let next_run_str = {
+        let expr = &body.expression;
+        // Normalize 5-field cron to 6-field (prepend seconds=0) for the cron crate.
+        let normalized = if expr.split_whitespace().count() == 5 {
+            format!("0 {expr}")
+        } else {
+            expr.to_string()
+        };
+        match cron::Schedule::from_str(&normalized) {
+            Ok(schedule) => match schedule.after(&now).next() {
+                Some(next) => next
+                    .with_timezone(&chrono::Utc)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                None => now_str.clone(),
+            },
+            Err(_) => now_str.clone(),
+        }
+    };
 
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = rusqlite::Connection::open(&db_path)?;
@@ -1912,7 +1934,7 @@ pub async fn create_cron_job(
         )?;
         conn.execute(
             "INSERT INTO cron_jobs (id, name, expression, command, prompt, job_type, enabled, created_at, next_run) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, '')",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
             rusqlite::params![
                 job_id_clone,
                 body.name,
@@ -1920,7 +1942,8 @@ pub async fn create_cron_job(
                 body.command.unwrap_or_default(),
                 body.prompt.unwrap_or_default(),
                 body.job_type,
-                now,
+                now_str,
+                next_run_str,
             ],
         )?;
         Ok(())

@@ -36,7 +36,7 @@ pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
     let (total, healthy, unhealthy) = state.registry.instance_count().await;
     Json(serde_json::json!({
         "uptime_secs": uptime,
-        "started_at": state.started_at.to_rfc3339(),
+        "started_at": state.started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "total_instances": total,
         "healthy_count": healthy,
         "unhealthy_count": unhealthy,

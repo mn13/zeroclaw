@@ -56,8 +56,8 @@ pub fn add_shell_job(
                 name,
                 serde_json::to_string(&DeliveryConfig::default())?,
                 if delete_after_run { 1 } else { 0 },
-                now.to_rfc3339(),
-                next_run.to_rfc3339(),
+                now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                next_run.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ],
         )
         .context("Failed to insert cron shell job")?;
@@ -102,8 +102,8 @@ pub fn add_agent_job(
                 model,
                 serde_json::to_string(&delivery)?,
                 if delete_after_run { 1 } else { 0 },
-                now.to_rfc3339(),
-                next_run.to_rfc3339(),
+                now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                next_run.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ],
         )
         .context("Failed to insert cron agent job")?;
@@ -243,7 +243,7 @@ pub fn update_job(config: &Config, job_id: &str, patch: CronJobPatch) -> Result<
                 if job.enabled { 1 } else { 0 },
                 serde_json::to_string(&job.delivery)?,
                 if job.delete_after_run { 1 } else { 0 },
-                job.next_run.to_rfc3339(),
+                job.next_run.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 job.id,
             ],
         )
@@ -268,7 +268,7 @@ pub fn record_last_run(
             "UPDATE cron_jobs
              SET last_run = ?1, last_status = ?2, last_output = ?3
              WHERE id = ?4",
-            params![finished_at.to_rfc3339(), status, bounded_output, job_id],
+            params![finished_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true), status, bounded_output, job_id],
         )
         .context("Failed to update cron last run fields")?;
         Ok(())
@@ -292,8 +292,8 @@ pub fn reschedule_after_run(
              SET next_run = ?1, last_run = ?2, last_status = ?3, last_output = ?4
              WHERE id = ?5",
             params![
-                next_run.to_rfc3339(),
-                now.to_rfc3339(),
+                next_run.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 status,
                 bounded_output,
                 job.id
@@ -325,8 +325,8 @@ pub fn record_run(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 job_id,
-                started_at.to_rfc3339(),
-                finished_at.to_rfc3339(),
+                started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                finished_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 status,
                 bounded_output.as_deref(),
                 duration_ms,
@@ -716,8 +716,8 @@ mod tests {
                     "echo ok",
                     Option::<String>::None,
                     "agent",
-                    now.to_rfc3339(),
-                    (now + ChronoDuration::minutes(5)).to_rfc3339(),
+                    now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    (now + ChronoDuration::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 ],
             )?;
             Ok(())
@@ -744,8 +744,8 @@ mod tests {
                     "echo ok",
                     Option::<String>::None,
                     "unknown",
-                    now.to_rfc3339(),
-                    (now + ChronoDuration::minutes(5)).to_rfc3339(),
+                    now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    (now + ChronoDuration::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 ],
             )?;
             Ok(())
@@ -768,8 +768,8 @@ mod tests {
                     "legacy-id",
                     "*/5 * * * *",
                     "echo legacy",
-                    Utc::now().to_rfc3339(),
-                    (Utc::now() + ChronoDuration::minutes(5)).to_rfc3339(),
+                    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    (Utc::now() + ChronoDuration::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 ],
             )?;
             conn.execute(
