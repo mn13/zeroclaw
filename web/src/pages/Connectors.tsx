@@ -10,8 +10,11 @@ import {
   deleteGoogleAccount,
   getComposio,
   updateComposio,
+  getSignal,
+  assignSignal,
+  unassignSignal,
 } from "../api";
-import type { ChannelSchema, ChannelField, McpServerConfig, GoogleConfig, GatewayGoogleAccount, ComposioConfig } from "../api";
+import type { ChannelSchema, ChannelField, McpServerConfig, GoogleConfig, GatewayGoogleAccount, ComposioConfig, SignalConfig, SignalConnection } from "../api";
 import { clipCorner } from "../theme";
 
 interface Props {
@@ -223,6 +226,10 @@ function IntegrationsTab({ instanceId, toast }: Props) {
   const [composioEnabled, setComposioEnabled] = useState(false);
   const [composioLoading, setComposioLoading] = useState(true);
 
+  const [signalConfig, setSignalConfig] = useState<SignalConfig | null>(null);
+  const [signalLoading, setSignalLoading] = useState(true);
+  const [signalAssignLoading, setSignalAssignLoading] = useState(false);
+
   const loadGoogle = useCallback(() => {
     setGoogleLoading(true);
     getGoogle(instanceId)
@@ -245,10 +252,19 @@ function IntegrationsTab({ instanceId, toast }: Props) {
       .finally(() => setComposioLoading(false));
   }, [instanceId, toast]);
 
+  const loadSignal = useCallback(() => {
+    setSignalLoading(true);
+    getSignal(instanceId)
+      .then((c) => setSignalConfig(c))
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Signal config", true))
+      .finally(() => setSignalLoading(false));
+  }, [instanceId, toast]);
+
   useEffect(() => {
     loadGoogle();
     loadComposio();
-  }, [instanceId, loadGoogle, loadComposio]);
+    loadSignal();
+  }, [instanceId, loadGoogle, loadComposio, loadSignal]);
 
   const handleGoogleToggle = useCallback(async () => {
     const next = !googleEnabled;
@@ -300,8 +316,47 @@ function IntegrationsTab({ instanceId, toast }: Props) {
     }
   }, [instanceId, toast, loadGoogle]);
 
-  const loading = googleLoading || composioLoading;
-  if (loading && !googleConfig && !composioConfig) {
+  // Signal assign config form state
+  const [signalAssignTarget, setSignalAssignTarget] = useState<string | null>(null);
+  const [signalAllowedFrom, setSignalAllowedFrom] = useState("*");
+  const [signalGroupId, setSignalGroupId] = useState("");
+
+  const handleSignalAssign = useCallback(async (connectionName: string) => {
+    const allowedFrom = signalAllowedFrom.trim()
+      ? signalAllowedFrom.split(",").map((s) => s.trim()).filter(Boolean)
+      : ["*"];
+    setSignalAssignLoading(true);
+    try {
+      await assignSignal(instanceId, {
+        connection: connectionName,
+        allowed_from: allowedFrom,
+        group_id: signalGroupId.trim() || undefined,
+      });
+      toast(`Assigned Signal connection "${connectionName}" to this agent`);
+      setSignalAssignTarget(null);
+      setSignalAllowedFrom("*");
+      setSignalGroupId("");
+      loadSignal();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Assign failed", true);
+    } finally {
+      setSignalAssignLoading(false);
+    }
+  }, [instanceId, signalAllowedFrom, signalGroupId, toast, loadSignal]);
+
+  const handleSignalUnassign = useCallback(async (connectionName: string) => {
+    if (!confirm(`Unassign Signal connection "${connectionName}" from this agent?`)) return;
+    try {
+      await unassignSignal(instanceId, connectionName);
+      toast(`Unassigned Signal connection "${connectionName}"`);
+      loadSignal();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Unassign failed", true);
+    }
+  }, [instanceId, toast, loadSignal]);
+
+  const loading = googleLoading || composioLoading || signalLoading;
+  if (loading && !googleConfig && !composioConfig && !signalConfig) {
     return (
       <div style={{ padding: 32, color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 14 }}>
         Loading integrations...
@@ -453,6 +508,163 @@ function IntegrationsTab({ instanceId, toast }: Props) {
             )}
           </div>
         )}
+      </div>
+
+      {/* Signal Section */}
+      <div style={{ marginTop: 32 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <span style={{ fontFamily: "Syne, sans-serif", fontSize: 16, fontWeight: 700, color: "var(--amber)" }}>
+            Signal
+          </span>
+          {signalConfig?.enabled && (
+            <span style={{ ...labelStyle, marginBottom: 0, color: "#22c55e" }}>Connected</span>
+          )}
+        </div>
+
+        {/* Currently assigned connection */}
+        {signalConfig?.enabled && signalConfig.connection_name ? (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ ...labelStyle, marginBottom: 10 }}>Assigned to this Agent</div>
+            <div
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                clipPath: clipCorner(6),
+              }}
+            >
+              <div>
+                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-primary)" }}>
+                  {signalConfig.connection_name}
+                </span>
+                <span style={{ marginLeft: 8, fontSize: 11, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                  {signalConfig.account}
+                </span>
+              </div>
+              <button
+                onClick={() => handleSignalUnassign(signalConfig.connection_name!)}
+                style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}
+              >
+                Unassign
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13, marginBottom: 16 }}>
+            No Signal connection assigned to this agent.
+          </div>
+        )}
+
+        {/* Available gateway connections (not assigned to this agent) */}
+        {(() => {
+          const gwConns: SignalConnection[] = signalConfig?.gateway_connections ?? [];
+          const currentName = signalConfig?.connection_name;
+          const available = gwConns.filter((c) => c.name !== currentName);
+
+          if (available.length === 0 && !signalConfig?.enabled) {
+            return (
+              <div style={{
+                padding: 12, background: "var(--bg-input)",
+                border: "1px solid var(--border)", clipPath: clipCorner(6),
+                color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 12,
+              }}>
+                No gateway connections available. Link Signal accounts on the gateway INTEGRATIONS page first.
+              </div>
+            );
+          }
+
+          if (available.length === 0) return null;
+
+          return (
+            <div>
+              <div style={{ ...labelStyle, marginBottom: 10 }}>Available Gateway Connections</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {available.map((conn) => (
+                  <div key={conn.name}>
+                    <div
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 12px", background: "var(--bg-input)", border: "1px dashed var(--border)",
+                        clipPath: clipCorner(6),
+                      }}
+                    >
+                      <div>
+                        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-dim)" }}>
+                          {conn.name}
+                        </span>
+                        <span style={{ marginLeft: 8, fontSize: 11, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                          {conn.account}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (signalAssignTarget === conn.name) {
+                            setSignalAssignTarget(null);
+                          } else {
+                            setSignalAssignTarget(conn.name);
+                            setSignalAllowedFrom("*");
+                            setSignalGroupId("");
+                          }
+                        }}
+                        style={{
+                          ...btnPrimary,
+                          padding: "4px 10px",
+                          fontSize: 10,
+                        }}
+                      >
+                        {signalAssignTarget === conn.name ? "Cancel" : "Assign"}
+                      </button>
+                    </div>
+
+                    {signalAssignTarget === conn.name && (
+                      <div style={{
+                        marginTop: 6, padding: 12, background: "var(--bg-card)",
+                        border: "1px solid var(--border)", clipPath: clipCorner(6),
+                        display: "flex", flexDirection: "column", gap: 10,
+                      }}>
+                        <div>
+                          <div style={{ ...labelStyle, marginBottom: 4 }}>Allowed Senders</div>
+                          <input
+                            value={signalAllowedFrom}
+                            onChange={(e) => setSignalAllowedFrom(e.target.value)}
+                            placeholder="* (all) or +1234567890, +0987654321"
+                            style={inputStyle}
+                          />
+                          <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 11, color: "var(--text-dim)", marginTop: 3 }}>
+                            Comma-separated E.164 phone numbers. Use * to allow all senders.
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ ...labelStyle, marginBottom: 4 }}>Group / DM Filter</div>
+                          <input
+                            value={signalGroupId}
+                            onChange={(e) => setSignalGroupId(e.target.value)}
+                            placeholder='Leave empty for all, or "dm" for DMs only'
+                            style={inputStyle}
+                          />
+                          <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 11, color: "var(--text-dim)", marginTop: 3 }}>
+                            Empty = all messages. "dm" = direct messages only. Or enter a specific group ID.
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleSignalAssign(conn.name)}
+                          disabled={signalAssignLoading}
+                          style={{
+                            ...btnPrimary,
+                            alignSelf: "flex-start",
+                            opacity: signalAssignLoading ? 0.4 : 1,
+                            cursor: signalAssignLoading ? "default" : "pointer",
+                          }}
+                        >
+                          {signalAssignLoading ? "Assigning..." : "Confirm Assign"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

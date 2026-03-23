@@ -26,6 +26,46 @@ pub struct OAuthPendingState {
     pub created_at: std::time::Instant,
 }
 
+/// A named Signal connection managed at the gateway level.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalConnection {
+    /// User-chosen label (e.g. "support-line").
+    pub name: String,
+    /// E.164 phone number (e.g. "+1234567890").
+    pub account: String,
+    /// ISO 8601 timestamp of when this account was linked.
+    pub linked_at: String,
+    /// Agent instance IDs this connection is assigned to.
+    pub assigned_to: Vec<String>,
+}
+
+/// Persistent store for gateway-level Signal connections.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SignalConnectionsStore {
+    pub connections: Vec<SignalConnection>,
+}
+
+/// Pending state for an in-progress Signal device-link flow.
+pub struct SignalLinkPendingState {
+    /// The device name used for linking (kept for diagnostics/logging).
+    #[allow(dead_code)]
+    pub device_name: String,
+    /// Handle to the signal-cli link child process.
+    pub child: tokio::process::Child,
+    pub created_at: std::time::Instant,
+}
+
+/// Configuration for the signal-cli daemon managed by the gateway.
+#[derive(Debug, Clone)]
+pub struct SignalCliConfig {
+    /// Path to the signal-cli binary.
+    pub cli_path: String,
+    /// Port for the signal-cli HTTP daemon.
+    pub http_port: u16,
+    /// Data directory for signal-cli account state.
+    pub data_dir: std::path::PathBuf,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Arc<InstanceRegistry>,
@@ -44,4 +84,12 @@ pub struct AppState {
     pub gog_home: std::path::PathBuf,
     /// Gateway-level Google accounts store.
     pub google_accounts: Arc<tokio::sync::RwLock<GoogleAccountsStore>>,
+    /// Gateway-level Signal connections store.
+    pub signal_connections: Arc<tokio::sync::RwLock<SignalConnectionsStore>>,
+    /// signal-cli daemon configuration.
+    pub signal_cli_config: SignalCliConfig,
+    /// Handle to the supervised signal-cli daemon process (None when not running).
+    pub signal_cli_handle: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
+    /// Pending Signal link operations (keyed by a random ID).
+    pub signal_link_pending: Arc<std::sync::Mutex<HashMap<String, SignalLinkPendingState>>>,
 }

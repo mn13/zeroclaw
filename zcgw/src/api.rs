@@ -20,6 +20,107 @@ fn authed_request<T>(body: T, secret: &str) -> tonic::Request<T> {
     req
 }
 
+// ── Input Validation Helpers ────────────────────────────────────────
+
+/// Maximum number of concurrent pending Signal link sessions.
+const MAX_PENDING_SIGNAL_LINKS: usize = 3;
+/// Maximum age of a pending Signal link session before it's considered stale.
+const PENDING_SIGNAL_LINK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Validate an agent ID to prevent path traversal.
+///
+/// Agent IDs must be non-empty, contain only alphanumeric characters, hyphens,
+/// and underscores, and must not contain path separators or `..`.
+fn validate_agent_id(id: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if id.is_empty() || id.len() > 128 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid agent ID: must be 1-128 characters" })),
+        ));
+    }
+    if id.contains('/') || id.contains('\\') || id.contains('\0') || id.contains("..") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid agent ID: must not contain path separators or '..'" })),
+        ));
+    }
+    // Allow alphanumeric, hyphens, underscores, dots (for docker container names)
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid agent ID: only alphanumeric, hyphens, underscores, and dots allowed" })),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a Signal device name (used in `signal-cli link -n <name>`).
+///
+/// Prevents command injection by restricting to safe characters.
+fn validate_device_name(name: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if name.is_empty() || name.len() > 64 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Device name must be 1-64 characters" })),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Device name must contain only letters, numbers, spaces, hyphens, and underscores" })),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a Signal connection name.
+fn validate_connection_name(name: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if name.is_empty() || name.len() > 64 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Connection name must be 1-64 characters" })),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Connection name must contain only letters, numbers, hyphens, and underscores" })),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate an E.164 phone number (e.g. "+1234567890").
+fn validate_e164(number: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    // E.164: starts with +, followed by 1-15 digits
+    let digits = number.strip_prefix('+').unwrap_or(number);
+    if digits.is_empty() || digits.len() > 15 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid phone number: must be E.164 format (e.g. +1234567890)" })),
+        ));
+    }
+    Ok(())
+}
+
+/// Evict expired pending Signal link sessions and return the current count.
+fn evict_stale_pending_links(
+    pending: &mut std::collections::HashMap<String, crate::app_state::SignalLinkPendingState>,
+) -> usize {
+    let now = std::time::Instant::now();
+    pending.retain(|_, state| now.duration_since(state.created_at) < PENDING_SIGNAL_LINK_TTL);
+    pending.len()
+}
+
 // ---------- Health ----------
 
 pub async fn health() -> impl IntoResponse {
@@ -1665,6 +1766,632 @@ pub async fn delete_google_account(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+// ── Gateway-level Signal endpoints ──────────────────────────────────
+
+/// Persist the Signal connections store to disk.
+async fn persist_signal_connections(state: &AppState) -> Result<(), StatusCode> {
+    let store = state.signal_connections.read().await;
+    let dir = state.docker_config.agents_dir.join(".signal");
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let json =
+        serde_json::to_string_pretty(&*store).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(dir.join("connections.json"), json)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to persist signal connections store");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+/// Determine the signal-cli HTTP URL that an agent container should use.
+fn signal_http_url_for_agent(state: &AppState) -> String {
+    let port = state.signal_cli_config.http_port;
+    if state.docker_config.host_mode {
+        format!("http://localhost:{port}")
+    } else {
+        // In Docker mode, agents reach the gateway container by its service name.
+        format!("http://gateway:{port}")
+    }
+}
+
+/// List all gateway-level Signal connections.
+pub async fn list_signal_connections(State(state): State<AppState>) -> impl IntoResponse {
+    let store = state.signal_connections.read().await;
+    let daemon_running = crate::signal_cli::health_check(state.signal_cli_config.http_port).await;
+    Json(serde_json::json!({
+        "connections": store.connections,
+        "daemon_running": daemon_running,
+    }))
+}
+
+/// Request body for starting a Signal device-link flow.
+#[derive(Deserialize)]
+pub struct SignalLinkStartBody {
+    /// Human-friendly device name (e.g. "ZeroClaw Gateway").
+    #[serde(default = "default_signal_device_name")]
+    device_name: String,
+}
+
+fn default_signal_device_name() -> String {
+    "ZeroClaw".to_string()
+}
+
+/// Start a Signal device-link flow.
+///
+/// Spawns `signal-cli link -n <device_name>` which outputs a `tsdevice://` URI
+/// on stdout and blocks until the user scans the QR code with their phone.
+/// Returns the URI (to be rendered as a QR code by the frontend) and a
+/// pending-link ID to poll/complete later.
+pub async fn signal_link_start(
+    State(state): State<AppState>,
+    Json(body): Json<SignalLinkStartBody>,
+) -> impl IntoResponse {
+    // Validate device name to prevent argument injection.
+    if let Err(e) = validate_device_name(&body.device_name) {
+        return e;
+    }
+
+    // Enforce limit on concurrent pending link sessions.
+    {
+        if let Ok(mut pending) = state.signal_link_pending.lock() {
+            let active = evict_stale_pending_links(&mut pending);
+            if active >= MAX_PENDING_SIGNAL_LINKS {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({ "error": "Too many pending link sessions. Complete or wait for existing ones to expire." })),
+                );
+            }
+        }
+    }
+
+    // We need to stop the daemon temporarily because signal-cli locks its data
+    // directory — the `link` command can't run while the daemon holds the lock.
+    crate::signal_cli::stop_daemon(&state.signal_cli_handle).await;
+
+    let child = tokio::process::Command::new(&state.signal_cli_config.cli_path)
+        .args([
+            "--config",
+            &state.signal_cli_config.data_dir.to_string_lossy(),
+            "link",
+            "-n",
+            &body.device_name,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            // Log internal details for operators; return sanitized message to client.
+            tracing::error!(error = %e, path = %state.signal_cli_config.cli_path, "Failed to spawn signal-cli link");
+            let msg = if e.kind() == std::io::ErrorKind::NotFound {
+                "signal-cli binary not found. Check gateway configuration."
+            } else {
+                "Failed to start signal-cli. Check gateway logs for details."
+            };
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": msg })),
+            );
+        }
+    };
+
+    // Read the tsdevice:// URI from stdout.  signal-cli prints the URI on the
+    // first line and then blocks waiting for the phone scan.
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            let _ = child.kill().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to capture signal-cli stdout" })),
+            );
+        }
+    };
+
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut uri_line = String::new();
+
+    // Wait up to 30 seconds for the URI to appear.
+    let read_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut uri_line),
+    )
+    .await;
+
+    match read_result {
+        Ok(Ok(0)) | Err(_) => {
+            // EOF or timeout — process likely failed. Read stderr for logging only.
+            let stderr_msg = if let Some(mut stderr) = child.stderr.take() {
+                let mut buf = String::new();
+                let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut buf).await;
+                buf
+            } else {
+                String::new()
+            };
+            let _ = child.kill().await;
+            // Restart daemon since we stopped it.
+            crate::signal_cli::start_daemon(
+                &state.signal_cli_config,
+                &state.signal_cli_handle,
+            )
+            .await;
+            // Log full details internally; return sanitized message to client.
+            tracing::error!(stderr = %stderr_msg.trim(), "signal-cli link failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "signal-cli link did not produce a URI. Check gateway logs for details." })),
+            );
+        }
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+            crate::signal_cli::start_daemon(
+                &state.signal_cli_config,
+                &state.signal_cli_handle,
+            )
+            .await;
+            tracing::error!(error = %e, "Failed to read signal-cli link output");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to read signal-cli output. Check gateway logs for details." })),
+            );
+        }
+        Ok(Ok(_)) => {}
+    }
+
+    let device_link_uri = uri_line.trim().to_string();
+    if !device_link_uri.starts_with("tsdevice:") && !device_link_uri.starts_with("sgnl:") {
+        let _ = child.kill().await;
+        crate::signal_cli::start_daemon(
+            &state.signal_cli_config,
+            &state.signal_cli_handle,
+        )
+        .await;
+        // Log the raw output internally; don't expose to client.
+        tracing::error!(output = %device_link_uri, "Unexpected signal-cli output");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "signal-cli produced unexpected output. Check gateway logs." })),
+        );
+    }
+
+    // Store the pending link (child process keeps running, waiting for QR scan).
+    let link_id = uuid::Uuid::new_v4().to_string();
+    if let Ok(mut pending) = state.signal_link_pending.lock() {
+        pending.insert(
+            link_id.clone(),
+            crate::app_state::SignalLinkPendingState {
+                device_name: body.device_name,
+                child,
+                created_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "link_id": link_id,
+            "device_link_uri": device_link_uri,
+        })),
+    )
+}
+
+/// Request body for completing a Signal device-link flow.
+#[derive(Deserialize)]
+pub struct SignalLinkFinishBody {
+    /// The link_id returned by `/link/start`.
+    link_id: String,
+    /// User-chosen name for this connection (e.g. "support-line").
+    name: String,
+    /// The E.164 phone number that was linked.
+    account: String,
+}
+
+/// Complete a Signal device-link flow.
+///
+/// The user has scanned the QR code — the `signal-cli link` process should
+/// have exited successfully.  This saves the connection to the store and
+/// restarts the daemon.
+pub async fn signal_link_finish(
+    State(state): State<AppState>,
+    Json(body): Json<SignalLinkFinishBody>,
+) -> impl IntoResponse {
+    // Validate inputs.
+    if let Err(e) = validate_connection_name(&body.name) {
+        return e;
+    }
+    if let Err(e) = validate_e164(&body.account) {
+        return e;
+    }
+
+    // Validate name is unique.
+    {
+        let store = state.signal_connections.read().await;
+        if store.connections.iter().any(|c| c.name == body.name) {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "Connection name already exists" })),
+            );
+        }
+    }
+
+    // Consume the pending link.
+    let mut pending_state = {
+        let pending = state.signal_link_pending.lock();
+        match pending {
+            Ok(mut p) => match p.remove(&body.link_id) {
+                Some(s) => s,
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({ "error": "Link session not found or expired. Please start a new link." })),
+                    );
+                }
+            },
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "Internal lock error" })),
+                );
+            }
+        }
+    };
+
+    // Wait for the link process to complete (up to 5 seconds — it should
+    // already be done once the user has scanned the QR code).
+    let wait_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        pending_state.child.wait(),
+    )
+    .await;
+
+    let success = match wait_result {
+        Ok(Ok(status)) => status.success(),
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "signal-cli link process error");
+            false
+        }
+        Err(_) => {
+            // Still running — the user may not have scanned yet.  Kill and fail.
+            let _ = pending_state.child.kill().await;
+            tracing::warn!("signal-cli link timed out waiting for completion");
+            false
+        }
+    };
+
+    // Restart the daemon regardless of success.
+    crate::signal_cli::start_daemon(&state.signal_cli_config, &state.signal_cli_handle).await;
+
+    if !success {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Signal linking failed. Make sure you scanned the QR code with your Signal app before completing." })),
+        );
+    }
+
+    // Normalize account: ensure E.164 format.
+    let account = if body.account.starts_with('+') {
+        body.account.clone()
+    } else {
+        format!("+{}", body.account)
+    };
+
+    // Save the connection.
+    {
+        let mut store = state.signal_connections.write().await;
+        store
+            .connections
+            .push(crate::app_state::SignalConnection {
+                name: body.name.clone(),
+                account,
+                linked_at: chrono::Utc::now()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                assigned_to: vec![],
+            });
+    }
+    if let Err(e) = persist_signal_connections(&state).await {
+        tracing::error!(error = ?e, "Failed to persist signal connections");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to save connection to disk" })),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "name": body.name,
+        })),
+    )
+}
+
+/// Delete a Signal connection from the gateway and all assigned agents.
+pub async fn delete_signal_connection(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = validate_connection_name(&name) {
+        return e;
+    }
+    let assigned_to = {
+        let store = state.signal_connections.read().await;
+        store
+            .connections
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.assigned_to.clone())
+            .unwrap_or_default()
+    };
+
+    // Remove signal config from each assigned agent.
+    for agent_id in &assigned_to {
+        if let Ok(mut config) = read_agent_config(&state, agent_id).await {
+            remove_signal_from_config(&mut config);
+            let _ = write_agent_config(&state, agent_id, &config).await;
+        }
+    }
+
+    // Remove from gateway store.
+    {
+        let mut store = state.signal_connections.write().await;
+        store.connections.retain(|c| c.name != name);
+    }
+    if let Err(sc) = persist_signal_connections(&state).await {
+        return (sc, Json(serde_json::json!({ "error": "Failed to persist connections" })));
+    }
+
+    // If no connections remain, stop the daemon.
+    {
+        let store = state.signal_connections.read().await;
+        if store.connections.is_empty() {
+            crate::signal_cli::stop_daemon(&state.signal_cli_handle).await;
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Per-instance Signal endpoints ───────────────────────────────────
+
+/// Get Signal integration status for an agent instance.
+pub async fn get_signal(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = validate_agent_id(&id) {
+        return e;
+    }
+    let config = match read_agent_config(&state, &id).await {
+        Ok(c) => c,
+        Err(sc) => return (sc, Json(serde_json::json!({ "error": "Agent not found" }))),
+    };
+    let signal = config
+        .get("channels_config")
+        .and_then(|c| c.get("signal"));
+
+    let enabled = signal.is_some();
+    let account = signal
+        .and_then(|s| s.get("account"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let http_url = signal
+        .and_then(|s| s.get("http_url"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+
+    // Find the connection name from our store by matching the account.
+    let connection_name = {
+        let store = state.signal_connections.read().await;
+        store
+            .connections
+            .iter()
+            .find(|c| c.account == account)
+            .map(|c| c.name.clone())
+    };
+
+    let gateway_connections = {
+        let store = state.signal_connections.read().await;
+        store.connections.clone()
+    };
+
+    (StatusCode::OK, Json(serde_json::json!({
+        "enabled": enabled,
+        "account": account,
+        "http_url": http_url,
+        "connection_name": connection_name,
+        "gateway_connections": gateway_connections,
+    })))
+}
+
+/// Request body for assigning a Signal connection to an agent.
+#[derive(Deserialize)]
+pub struct AssignSignalBody {
+    /// Name of the gateway-level Signal connection to assign.
+    connection: String,
+    /// Optional group ID filter ("dm" for DMs only, or a specific group ID).
+    #[serde(default)]
+    group_id: Option<String>,
+    /// Allowed sender numbers. Defaults to ["*"] (all).
+    #[serde(default)]
+    allowed_from: Option<Vec<String>>,
+    /// Skip attachment-only messages.
+    #[serde(default)]
+    ignore_attachments: Option<bool>,
+    /// Skip story messages.
+    #[serde(default)]
+    ignore_stories: Option<bool>,
+}
+
+/// Assign a named Signal connection to an agent instance.
+pub async fn assign_signal(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AssignSignalBody>,
+) -> impl IntoResponse {
+    if let Err(e) = validate_agent_id(&id) {
+        return e;
+    }
+
+    // Validate allowed_from entries are valid E.164 numbers or "*".
+    if let Some(ref entries) = body.allowed_from {
+        for entry in entries {
+            if entry != "*" {
+                if let Err(e) = validate_e164(entry) {
+                    return e;
+                }
+            }
+        }
+    }
+
+    // Look up the connection.
+    let connection = {
+        let store = state.signal_connections.read().await;
+        match store.connections.iter().find(|c| c.name == body.connection).cloned() {
+            Some(c) => c,
+            None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Signal connection not found" }))),
+        }
+    };
+
+    let http_url = signal_http_url_for_agent(&state);
+    let allowed_from = body.allowed_from.unwrap_or_else(|| vec!["*".to_string()]);
+    let ignore_attachments = body.ignore_attachments.unwrap_or(false);
+    let ignore_stories = body.ignore_stories.unwrap_or(true);
+
+    // Write signal config into the agent's config.toml.
+    let mut config = match read_agent_config(&state, &id).await {
+        Ok(c) => c,
+        Err(sc) => return (sc, Json(serde_json::json!({ "error": "Agent not found" }))),
+    };
+    ensure_signal_in_config(
+        &mut config,
+        &http_url,
+        &connection.account,
+        body.group_id.as_deref(),
+        &allowed_from,
+        ignore_attachments,
+        ignore_stories,
+    );
+    if let Err(sc) = write_agent_config(&state, &id, &config).await {
+        return (sc, Json(serde_json::json!({ "error": "Failed to write agent config" })));
+    }
+
+    // Update assigned_to in the gateway store.
+    {
+        let mut store = state.signal_connections.write().await;
+        if let Some(conn) = store.connections.iter_mut().find(|c| c.name == body.connection) {
+            if !conn.assigned_to.contains(&id) {
+                conn.assigned_to.push(id.clone());
+            }
+        }
+    }
+    if let Err(sc) = persist_signal_connections(&state).await {
+        return (sc, Json(serde_json::json!({ "error": "Failed to persist connections" })));
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+}
+
+/// Unassign a Signal connection from an agent instance.
+pub async fn unassign_signal(
+    State(state): State<AppState>,
+    Path((id, name)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(e) = validate_agent_id(&id) {
+        return e;
+    }
+    let mut config = match read_agent_config(&state, &id).await {
+        Ok(c) => c,
+        Err(sc) => return (sc, Json(serde_json::json!({ "error": "Agent not found" }))),
+    };
+    remove_signal_from_config(&mut config);
+    if let Err(sc) = write_agent_config(&state, &id, &config).await {
+        return (sc, Json(serde_json::json!({ "error": "Failed to write agent config" })));
+    }
+
+    // Update assigned_to in the gateway store.
+    {
+        let mut store = state.signal_connections.write().await;
+        if let Some(conn) = store.connections.iter_mut().find(|c| c.name == name) {
+            conn.assigned_to.retain(|aid| aid != &id);
+        }
+    }
+    if let Err(sc) = persist_signal_connections(&state).await {
+        return (sc, Json(serde_json::json!({ "error": "Failed to persist connections" })));
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Signal config helpers ───────────────────────────────────────────
+
+/// Write the `[channels_config.signal]` section into an agent's TOML config.
+fn ensure_signal_in_config(
+    config: &mut toml::Value,
+    http_url: &str,
+    account: &str,
+    group_id: Option<&str>,
+    allowed_from: &[String],
+    ignore_attachments: bool,
+    ignore_stories: bool,
+) {
+    if let toml::Value::Table(ref mut root) = config {
+        let channels = root
+            .entry("channels_config")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if let toml::Value::Table(ref mut ct) = channels {
+            // Ensure the required `cli` field exists (defaults to false for Docker agents).
+            ct.entry("cli")
+                .or_insert(toml::Value::Boolean(false));
+            let mut signal_table = toml::map::Map::new();
+            signal_table.insert(
+                "http_url".to_string(),
+                toml::Value::String(http_url.to_string()),
+            );
+            signal_table.insert(
+                "account".to_string(),
+                toml::Value::String(account.to_string()),
+            );
+            if let Some(gid) = group_id {
+                signal_table.insert(
+                    "group_id".to_string(),
+                    toml::Value::String(gid.to_string()),
+                );
+            }
+            signal_table.insert(
+                "allowed_from".to_string(),
+                toml::Value::Array(
+                    allowed_from
+                        .iter()
+                        .map(|s| toml::Value::String(s.clone()))
+                        .collect(),
+                ),
+            );
+            signal_table.insert(
+                "ignore_attachments".to_string(),
+                toml::Value::Boolean(ignore_attachments),
+            );
+            signal_table.insert(
+                "ignore_stories".to_string(),
+                toml::Value::Boolean(ignore_stories),
+            );
+            ct.insert("signal".to_string(), toml::Value::Table(signal_table));
+        }
+    }
+}
+
+/// Remove the `[channels_config.signal]` section from an agent's TOML config.
+fn remove_signal_from_config(config: &mut toml::Value) {
+    if let toml::Value::Table(ref mut root) = config {
+        if let Some(toml::Value::Table(ref mut ct)) = root.get_mut("channels_config") {
+            ct.remove("signal");
+        }
+    }
+}
+
 // ---------- Skills ----------
 
 fn agent_skills_dir(state: &AppState, id: &str) -> std::path::PathBuf {
@@ -1714,7 +2441,11 @@ pub async fn update_skill(
     Path((id, name)): Path<(String, String)>,
     Json(body): Json<UpdateSkillBody>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !name.ends_with(".md") {
+    if !name.ends_with(".md")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
     let skills_dir = agent_skills_dir(&state, &id);
@@ -1732,7 +2463,11 @@ pub async fn delete_skill(
     State(state): State<AppState>,
     Path((id, name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !name.ends_with(".md") {
+    if !name.ends_with(".md")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
     let path = agent_skills_dir(&state, &id).join(&name);

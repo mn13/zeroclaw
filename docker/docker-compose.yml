@@ -1,5 +1,6 @@
 services:
   gateway:
+    platform: linux/amd64
     build:
       context: ..
       dockerfile: docker/Dockerfile.zcgw
@@ -21,6 +22,8 @@ services:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       ZEROCLAW_GOOGLE_CREDENTIALS_JSON: "${ZEROCLAW_GOOGLE_CREDENTIALS_JSON:-}"
       ZEROCLAW_GOOGLE_REDIRECT_HOST: "${ZEROCLAW_GOOGLE_REDIRECT_HOST:-}"
+      ZCGW_SIGNAL_CLI_PORT: "${ZCGW_SIGNAL_CLI_PORT:-8686}"
+      ZCGW_SIGNAL_CLI_PATH: "${ZCGW_SIGNAL_CLI_PATH:-signal-cli}"
     volumes:
       - ./config/zcgw.toml:/etc/zcgw/config.toml
       - ./config/zc-venice.toml:/etc/zcgw/zc-template.toml:ro
@@ -29,7 +32,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
 
   web:
     build:

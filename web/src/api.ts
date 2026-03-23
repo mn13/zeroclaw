@@ -37,7 +37,16 @@ function headers(): Record<string, string> {
 async function api<T>(path: string, opts?: RequestInit): Promise<T> {
   const resp = await fetch(path, { ...opts, headers: { ...headers(), ...opts?.headers } });
   if (resp.status === 401) throw new Error("Unauthorized");
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  if (!resp.ok) {
+    // Try to extract a JSON error message from the response body.
+    try {
+      const body = await resp.json();
+      if (body?.error) throw new Error(body.error);
+    } catch (e) {
+      if (e instanceof Error && e.message !== `HTTP ${resp.status}`) throw e;
+    }
+    throw new Error(`HTTP ${resp.status}`);
+  }
   return resp.json() as Promise<T>;
 }
 
@@ -376,6 +385,63 @@ export const updateGoogle = (
 export const deleteGoogleAccount = (id: string, email: string) =>
   api<{ ok: boolean }>(
     `/api/instances/${encodeURIComponent(id)}/integrations/google/accounts/${encodeURIComponent(email)}`,
+    { method: "DELETE" },
+  );
+
+// ── Integrations: Signal ──
+export interface SignalConnection {
+  name: string;
+  account: string;
+  linked_at: string;
+  assigned_to: string[];
+}
+
+export interface SignalConfig {
+  enabled: boolean;
+  account: string;
+  http_url: string;
+  connection_name: string | null;
+  gateway_connections: SignalConnection[];
+}
+
+// Gateway-level Signal endpoints
+export const listSignalConnections = () =>
+  api<{ connections: SignalConnection[]; daemon_running: boolean }>("/api/admin/signal/connections");
+
+export const signalLinkStart = (device_name?: string) =>
+  api<{ link_id: string; device_link_uri: string }>("/api/admin/signal/link/start", {
+    method: "POST",
+    body: JSON.stringify({ device_name: device_name || "ZeroClaw" }),
+  });
+
+export const signalLinkFinish = (link_id: string, name: string, account: string) =>
+  api<{ ok: boolean; name: string }>("/api/admin/signal/link/finish", {
+    method: "POST",
+    body: JSON.stringify({ link_id, name, account }),
+  });
+
+export const deleteSignalConnection = (name: string) =>
+  api<{ ok: boolean }>(
+    `/api/admin/signal/connections/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+
+// Per-instance Signal endpoints
+export const getSignal = (id: string) =>
+  api<SignalConfig>(`/api/instances/${encodeURIComponent(id)}/integrations/signal`);
+
+export const assignSignal = (
+  id: string,
+  data: { connection: string; group_id?: string; allowed_from?: string[]; ignore_stories?: boolean },
+) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/signal`,
+    { method: "PUT", body: JSON.stringify(data) },
+  );
+
+export const unassignSignal = (id: string, name: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/signal/${encodeURIComponent(name)}`,
     { method: "DELETE" },
   );
 

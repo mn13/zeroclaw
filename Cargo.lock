@@ -7940,6 +7940,7 @@ dependencies = [
  "cron",
  "futures-util",
  "prost 0.13.5",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

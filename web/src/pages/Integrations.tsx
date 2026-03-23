@@ -4,13 +4,20 @@ import {
   gatewayGoogleAuthInit,
   gatewayGoogleAuthComplete,
   deleteGatewayGoogleAccount,
+  listSignalConnections,
+  signalLinkStart,
+  signalLinkFinish,
+  deleteSignalConnection,
 } from "../api";
-import type { GatewayGoogleAccount } from "../api";
+import type { GatewayGoogleAccount, SignalConnection } from "../api";
 import { clipCorner } from "../theme";
+import { QRCodeSVG } from "qrcode.react";
 
 interface Props {
   toast: (msg: string, isError?: boolean) => void;
 }
+
+type Tab = "google" | "signal";
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
@@ -59,6 +66,21 @@ const inputStyle: React.CSSProperties = {
   outline: "none",
   boxSizing: "border-box" as const,
 };
+
+const tabBtnStyle = (active: boolean): React.CSSProperties => ({
+  fontFamily: "Syne, sans-serif",
+  fontSize: 12,
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: 2,
+  padding: "8px 20px",
+  background: active ? "var(--amber-glow)" : "transparent",
+  border: "none",
+  borderBottom: active ? "2px solid var(--amber)" : "2px solid transparent",
+  color: active ? "var(--amber)" : "var(--text-dim)",
+  cursor: "pointer",
+  transition: "all 0.15s",
+});
 
 // ── Google Gateway Tab ──
 
@@ -256,9 +278,259 @@ function GoogleGatewayTab({ toast }: Props) {
   );
 }
 
+// ── Signal Gateway Tab ──
+
+function SignalGatewayTab({ toast }: Props) {
+  const [connections, setConnections] = useState<SignalConnection[]>([]);
+  const [daemonRunning, setDaemonRunning] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Link flow state
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkUri, setLinkUri] = useState("");
+  const [linkId, setLinkId] = useState("");
+  const [linkName, setLinkName] = useState("");
+  const [linkAccount, setLinkAccount] = useState("");
+  const [finishLoading, setFinishLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    listSignalConnections()
+      .then((resp) => {
+        setConnections(resp.connections);
+        setDaemonRunning(resp.daemon_running);
+      })
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Signal connections", true))
+      .finally(() => setLoading(false));
+  }, [toast]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleStartLink = useCallback(async () => {
+    setLinkLoading(true);
+    try {
+      const resp = await signalLinkStart("ZeroClaw");
+      setLinkUri(resp.device_link_uri);
+      setLinkId(resp.link_id);
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Failed to start Signal linking", true);
+    } finally {
+      setLinkLoading(false);
+    }
+  }, [toast]);
+
+  const handleFinishLink = useCallback(async () => {
+    if (!linkName || !linkAccount || !linkId) return;
+    setFinishLoading(true);
+    try {
+      await signalLinkFinish(linkId, linkName, linkAccount);
+      toast(`Signal connection "${linkName}" linked successfully`);
+      setLinkUri("");
+      setLinkId("");
+      setLinkName("");
+      setLinkAccount("");
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Failed to complete linking", true);
+    } finally {
+      setFinishLoading(false);
+    }
+  }, [linkId, linkName, linkAccount, toast, load]);
+
+  const handleCancelLink = useCallback(() => {
+    setLinkUri("");
+    setLinkId("");
+    setLinkName("");
+    setLinkAccount("");
+  }, []);
+
+  const handleRemoveConnection = useCallback(async (name: string) => {
+    const conn = connections.find((c) => c.name === name);
+    const assignedTo = conn?.assigned_to ?? [];
+    const msg = assignedTo.length > 0
+      ? `Remove "${name}" and unassign from ${assignedTo.join(", ")}?`
+      : `Remove Signal connection "${name}"?`;
+    if (!confirm(msg)) return;
+    try {
+      await deleteSignalConnection(name);
+      toast(`Removed "${name}"`);
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Remove failed", true);
+    }
+  }, [connections, toast, load]);
+
+  if (loading && connections.length === 0) {
+    return (
+      <div style={{ padding: 32, color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 14 }}>
+        Loading Signal connections...
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: 24, maxWidth: 600 }}>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontFamily: "Syne, sans-serif", fontSize: 16, fontWeight: 700, color: "var(--amber)" }}>
+            Signal
+          </span>
+          <span
+            style={{
+              fontFamily: "JetBrains Mono, monospace", fontSize: 10, fontWeight: 600,
+              padding: "2px 8px", borderRadius: 4,
+              background: daemonRunning ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
+              color: daemonRunning ? "#22c55e" : "#ef4444",
+            }}
+          >
+            {daemonRunning ? "DAEMON RUNNING" : "DAEMON STOPPED"}
+          </span>
+        </div>
+        <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+          Manage gateway-level Signal connections. Link your phone via QR code, then assign to agents on the agent CONNECT page.
+        </div>
+      </div>
+
+      {/* Existing Connections */}
+      <div>
+        <div style={{ ...labelStyle, marginBottom: 10 }}>Gateway Connections</div>
+        {connections.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+            {connections.map((conn) => (
+              <div
+                key={conn.name}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                  clipPath: clipCorner(6),
+                }}
+              >
+                <div>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: "var(--text-primary)" }}>
+                    {conn.name}
+                  </span>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                    {conn.account}
+                  </span>
+                  {conn.assigned_to.length > 0 && (
+                    <span style={{ marginLeft: 8, fontSize: 10, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                      [{conn.assigned_to.join(", ")}]
+                    </span>
+                  )}
+                </div>
+                <button onClick={() => handleRemoveConnection(conn.name)} style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13, marginBottom: 16 }}>
+            No Signal connections. Link an account below.
+          </div>
+        )}
+      </div>
+
+      {/* Link New Account */}
+      <div style={{ marginTop: 24, padding: 16, border: "1px solid var(--border)", clipPath: clipCorner(8) }}>
+        <div style={{ ...labelStyle, marginBottom: 8 }}>Link New Account</div>
+
+        {!linkUri ? (
+          <div>
+            <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 12, color: "var(--text-dim)", marginBottom: 12 }}>
+              This will generate a QR code URI. Open it in a QR code viewer or scan it with your Signal app
+              to link your phone number as a secondary device.
+            </div>
+            <button
+              onClick={handleStartLink}
+              disabled={linkLoading}
+              style={{
+                ...btnPrimary,
+                opacity: linkLoading ? 0.4 : 1,
+                cursor: linkLoading ? "default" : "pointer",
+              }}
+            >
+              {linkLoading ? "Starting..." : "Start Link"}
+            </button>
+          </div>
+        ) : (
+          <div>
+            {/* QR Code display */}
+            <div style={{ ...labelStyle, marginBottom: 4 }}>Scan QR Code</div>
+            <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 12, color: "var(--text-dim)", marginBottom: 12 }}>
+              Open Signal on your phone &rarr; Settings &rarr; Linked Devices &rarr; Link New Device, then scan:
+            </div>
+            <div
+              style={{
+                display: "flex", justifyContent: "center", padding: 20,
+                background: "#ffffff", border: "1px solid var(--border)",
+                clipPath: clipCorner(8), marginBottom: 16,
+              }}
+            >
+              <QRCodeSVG value={linkUri} size={220} level="M" />
+            </div>
+            <details style={{ marginBottom: 16 }}>
+              <summary style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--text-dim)", cursor: "pointer" }}>
+                Show raw URI
+              </summary>
+              <div
+                style={{
+                  marginTop: 6, padding: "8px 12px", background: "var(--bg-input)",
+                  border: "1px solid var(--border)", clipPath: clipCorner(6),
+                  fontFamily: "JetBrains Mono, monospace", fontSize: 10,
+                  color: "var(--text-primary)", wordBreak: "break-all", userSelect: "all",
+                }}
+              >
+                {linkUri}
+              </div>
+            </details>
+
+            {/* Finish form */}
+            <div style={{ ...labelStyle, marginBottom: 4 }}>After scanning, complete the link:</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input
+                value={linkName}
+                onChange={(e) => setLinkName(e.target.value)}
+                placeholder='Connection name (e.g. "support-line")'
+                style={inputStyle}
+              />
+              <input
+                value={linkAccount}
+                onChange={(e) => setLinkAccount(e.target.value)}
+                placeholder="Phone number (e.g. +1234567890)"
+                style={inputStyle}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={handleFinishLink}
+                  disabled={!linkName || !linkAccount || finishLoading}
+                  style={{
+                    ...btnPrimary,
+                    opacity: linkName && linkAccount && !finishLoading ? 1 : 0.4,
+                    cursor: linkName && linkAccount && !finishLoading ? "pointer" : "default",
+                  }}
+                >
+                  {finishLoading ? "Completing..." : "Complete Link"}
+                </button>
+                <button onClick={handleCancelLink} style={btnSecondary}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Integrations Page (Gateway-Level) ──
 
 export default function Integrations({ toast }: Props) {
+  const [tab, setTab] = useState<Tab>("google");
+
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
       <div
@@ -270,28 +542,17 @@ export default function Integrations({ toast }: Props) {
           minHeight: 40,
         }}
       >
-        <button
-          style={{
-            fontFamily: "Syne, sans-serif",
-            fontSize: 12,
-            fontWeight: 700,
-            textTransform: "uppercase",
-            letterSpacing: 2,
-            padding: "8px 20px",
-            background: "var(--amber-glow)",
-            border: "none",
-            borderBottom: "2px solid var(--amber)",
-            color: "var(--amber)",
-            cursor: "pointer",
-            transition: "all 0.15s",
-          }}
-        >
+        <button onClick={() => setTab("google")} style={tabBtnStyle(tab === "google")}>
           Google
+        </button>
+        <button onClick={() => setTab("signal")} style={tabBtnStyle(tab === "signal")}>
+          Signal
         </button>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }}>
-        <GoogleGatewayTab toast={toast} />
+        {tab === "google" && <GoogleGatewayTab toast={toast} />}
+        {tab === "signal" && <SignalGatewayTab toast={toast} />}
       </div>
     </div>
   );

@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod docker;
 mod registry;
+mod signal_cli;
 
 mod ws;
 
@@ -208,6 +209,59 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Initialize Signal connections store and signal-cli configuration
+    let signal_cli_port: u16 = std::env::var("ZCGW_SIGNAL_CLI_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8686);
+    let signal_cli_path = std::env::var("ZCGW_SIGNAL_CLI_PATH")
+        .unwrap_or_else(|_| "signal-cli".to_string());
+    let signal_data_dir = docker_config.agents_dir.join(".signal").join("data");
+    tokio::fs::create_dir_all(&signal_data_dir).await?;
+
+    let signal_connections_path = docker_config.agents_dir.join(".signal").join("connections.json");
+    let signal_connections: app_state::SignalConnectionsStore = if signal_connections_path.exists() {
+        match tokio::fs::read_to_string(&signal_connections_path).await {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load signal connections store");
+                app_state::SignalConnectionsStore::default()
+            }
+        }
+    } else {
+        app_state::SignalConnectionsStore::default()
+    };
+
+    let signal_cli_config = app_state::SignalCliConfig {
+        cli_path: signal_cli_path,
+        http_port: signal_cli_port,
+        data_dir: signal_data_dir,
+    };
+
+    let signal_cli_handle: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+
+    // Auto-start signal-cli daemon if there are linked accounts
+    if !signal_connections.connections.is_empty() {
+        signal_cli::start_daemon(&signal_cli_config, &signal_cli_handle).await;
+    }
+
+    let signal_connections = Arc::new(tokio::sync::RwLock::new(signal_connections));
+    let signal_link_pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+    // Spawn signal-cli daemon supervisor (restarts on crash if accounts exist)
+    let supervisor_handle = signal_cli_handle.clone();
+    let supervisor_config = signal_cli_config.clone();
+    let supervisor_connections = signal_connections.clone();
+    tokio::spawn(async move {
+        signal_cli::supervise_daemon(
+            &supervisor_config,
+            &supervisor_handle,
+            &supervisor_connections,
+        )
+        .await;
+    });
+
     let registry = Arc::new(registry::InstanceRegistry::new(
         config.instances.clone(),
         grpc_secret.clone(),
@@ -233,15 +287,23 @@ async fn main() -> anyhow::Result<()> {
         oauth_pending: oauth_pending.clone(),
         gog_home,
         google_accounts,
+        signal_connections,
+        signal_cli_config,
+        signal_cli_handle,
+        signal_link_pending: signal_link_pending.clone(),
     };
 
     // Background task: prune expired OAuth pending entries (older than 10 minutes) every 60s.
+    // Also prunes expired Signal link pending entries.
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
             let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(600);
             if let Ok(mut pending) = oauth_pending.lock() {
+                pending.retain(|_, v| v.created_at > cutoff);
+            }
+            if let Ok(mut pending) = signal_link_pending.lock() {
                 pending.retain(|_, v| v.created_at > cutoff);
             }
         }
@@ -344,6 +406,32 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/api/instances/{id}/integrations/google/accounts/{email}",
             delete(api::delete_google_account),
+        )
+        // Integrations: Signal — gateway-level
+        .route(
+            "/api/admin/signal/connections",
+            get(api::list_signal_connections),
+        )
+        .route(
+            "/api/admin/signal/link/start",
+            post(api::signal_link_start),
+        )
+        .route(
+            "/api/admin/signal/link/finish",
+            post(api::signal_link_finish),
+        )
+        .route(
+            "/api/admin/signal/connections/{name}",
+            delete(api::delete_signal_connection),
+        )
+        // Integrations: Signal — per-instance
+        .route(
+            "/api/instances/{id}/integrations/signal",
+            get(api::get_signal).put(api::assign_signal),
+        )
+        .route(
+            "/api/instances/{id}/integrations/signal/{name}",
+            delete(api::unassign_signal),
         )
         // Cron Jobs
         .route(
