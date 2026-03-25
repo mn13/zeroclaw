@@ -10,9 +10,10 @@ mkdir -p "$ZCDIR/workspace" 2>/dev/null || {
     true
 }
 
-# If a config file was mounted at /etc/zc/config.toml, always sync it
-# so that gateway config edits take effect after container restart.
-if [ -f /etc/zc/config.toml ]; then
+# Seed config from the bind-mounted template on first run only.
+# Runtime changes (via PUT /api/config) are persisted to $ZCDIR/config.toml
+# and must not be overwritten on subsequent restarts.
+if [ -f /etc/zc/config.toml ] && [ ! -f "$ZCDIR/config.toml" ]; then
     cp /etc/zc/config.toml "$ZCDIR/config.toml" 2>/dev/null || true
 fi
 
