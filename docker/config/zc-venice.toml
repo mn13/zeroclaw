@@ -40,19 +40,19 @@ max_history_messages = 50
 
 # ── Autonomy ────────────────────────────────────────────────
 [autonomy]
-level = "supervised"
+level = "full"
 workspace_only = true
 max_actions_per_hour = 20
 auto_approve = ["file_read", "memory_recall"]
-allowed_commands = ["git", "npm", "cargo", "ls", "cat", "grep", "find", "echo", "pwd", "curl", "wget"]
+allowed_commands = ["*"]
 forbidden_paths = [
     "/etc", "/root", "/usr", "/bin", "/sbin", "/lib", "/opt",
     "/boot", "/dev", "/proc", "/sys", "/var", "/tmp",
     "~/.ssh", "~/.gnupg", "~/.aws", "~/.config",
 ]
 max_cost_per_day_cents = 500
-require_approval_for_medium_risk = true
-block_high_risk_commands = true
+require_approval_for_medium_risk = false
+block_high_risk_commands = false
 shell_env_passthrough = []
 always_ask = []
 allowed_roots = []
