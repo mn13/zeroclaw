@@ -225,6 +225,9 @@ export const instanceAction = (
 
 export const getAgentTemplate = () => api<{ raw: string }>("/api/admin/template");
 
+export const getWorkspaceTemplates = () =>
+  api<{ files: IdentityFile[] }>("/api/admin/workspace-templates");
+
 // ── Identity ──
 export interface IdentityFile {
   filename: string;

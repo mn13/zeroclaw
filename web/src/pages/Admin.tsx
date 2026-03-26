@@ -7,6 +7,7 @@ import {
   createInstance,
   instanceAction,
   getAgentTemplate,
+  getWorkspaceTemplates,
   batchUpdateIdentity,
 } from "../api";
 import type { AdminStats, DetailedInstance, InstanceInfo, IdentityFile } from "../api";
@@ -164,12 +165,13 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
   const [templateLoaded, setTemplateLoaded] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
-  // Identity files for new agent
+  // Identity files for new agent (loaded from workspace templates)
   const [identityFiles, setIdentityFiles] = useState<IdentityFile[]>([
     { filename: "SOUL.md", content: "" },
     { filename: "IDENTITY.md", content: "" },
   ]);
   const [activeIdentityFile, setActiveIdentityFile] = useState<string>("SOUL.md");
+  const [workspaceTemplates, setWorkspaceTemplates] = useState<IdentityFile[]>([]);
 
   // Confirm destroy
   const [destroyConfirm, setDestroyConfirm] = useState<string | null>(null);
@@ -205,6 +207,17 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
       })
       .catch(() => {
         // template endpoint may not exist, that's ok
+      });
+    getWorkspaceTemplates()
+      .then((res) => {
+        if (res.files && res.files.length > 0) {
+          setWorkspaceTemplates(res.files);
+          setIdentityFiles(res.files.map((f) => ({ ...f })));
+          setActiveIdentityFile(res.files[0]?.filename ?? "SOUL.md");
+        }
+      })
+      .catch(() => {
+        // workspace templates may not be configured
       });
   }, [templateLoaded]);
 
@@ -290,10 +303,11 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
       setTemplateLoaded(false);
       setNewConfig({});
       setNewTomlRaw("");
-      setIdentityFiles([
-        { filename: "SOUL.md", content: "" },
-        { filename: "IDENTITY.md", content: "" },
-      ]);
+      setIdentityFiles(
+        workspaceTemplates.length > 0
+          ? workspaceTemplates.map((f) => ({ ...f }))
+          : [{ filename: "SOUL.md", content: "" }, { filename: "IDENTITY.md", content: "" }],
+      );
       loadDashboard();
       onInstancesChange();
       // Refresh again after health check completes (background check takes ~4-10s)
@@ -301,7 +315,7 @@ export default function Admin({ toast, instances: _instances, onInstancesChange 
     } catch (err: unknown) {
       toast(err instanceof Error ? err.message : "Create failed", true);
     }
-  }, [newId, newName, newConfig, newTomlRaw, showRawToml, identityFiles, toast, loadDashboard, onInstancesChange]);
+  }, [newId, newName, newConfig, newTomlRaw, showRawToml, identityFiles, workspaceTemplates, toast, loadDashboard, onInstancesChange]);
 
   const sectionHeading: React.CSSProperties = {
     fontFamily: "Syne, sans-serif",

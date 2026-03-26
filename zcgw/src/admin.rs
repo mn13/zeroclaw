@@ -271,3 +271,28 @@ pub async fn get_template(
         .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(serde_json::json!({ "raw": content })))
 }
+
+/// Return all workspace template files (SOUL.md, IDENTITY.md, TOOLS.md, etc.)
+/// so the admin UI can pre-populate identity fields when creating a new agent.
+pub async fn get_workspace_templates(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let dir = &state.docker_config.workspace_templates_dir;
+    let mut files: Vec<serde_json::Value> = Vec::new();
+
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let filename = entry.file_name().to_string_lossy().to_string();
+        let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+        files.push(serde_json::json!({ "filename": filename, "content": content }));
+    }
+
+    Ok(Json(serde_json::json!({ "files": files })))
+}

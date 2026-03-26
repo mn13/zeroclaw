@@ -1160,7 +1160,11 @@ async fn copy_keyring_to_agent(
     Ok(())
 }
 
-/// Write/update the TOOLS.md file for an agent with Google Workspace instructions.
+/// Append the Google Workspace section to an agent's TOOLS.md.
+/// Only appends if the section doesn't already exist. Never overwrites
+/// existing content — the agent's own edits are always preserved.
+/// If TOOLS.md doesn't exist yet (no template was provisioned), creates
+/// a minimal one with the Google section.
 async fn write_tools_md(agents_dir: &std::path::Path, instance_id: &str) -> Result<(), StatusCode> {
     let workspace_dir = agents_dir
         .join(instance_id)
@@ -1201,23 +1205,17 @@ It is pre-installed and whitelisted — call it directly via the shell tool.
             .await
             .unwrap_or_default();
         if content.contains("## Google Workspace") {
-            // Already has the section
+            // Already has the section — do not touch the file
             return Ok(());
         }
+        // Append to existing content (preserving agent edits)
         let updated = format!("{content}\n\n{google_section}\n");
         tokio::fs::write(&tools_path, updated)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
-        let content = format!(
-            "# TOOLS.md\n\n## Built-in Tools\n\
-             - **shell** — Execute terminal commands (subject to security policy)\n\
-             - **file_read** — Read file contents\n\
-             - **file_write** — Write/edit files\n\
-             - **memory_store** — Save durable context to long-term memory\n\
-             - **memory_recall** — Search long-term memory\n\
-             - **memory_forget** — Remove a memory entry\n\n{google_section}\n"
-        );
+        // No TOOLS.md at all — create a minimal fallback with just the Google section
+        let content = format!("# TOOLS.md\n\n{google_section}\n");
         tokio::fs::write(&tools_path, content)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

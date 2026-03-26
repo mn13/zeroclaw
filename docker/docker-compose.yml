@@ -27,6 +27,7 @@ services:
     volumes:
       - ./config/zcgw.toml:/etc/zcgw/config.toml
       - ./config/zc-venice.toml:/etc/zcgw/zc-template.toml:ro
+      - ./config/workspace-templates:/etc/zcgw/workspace-templates:ro
       - ./agents:/var/lib/zcgw/agents
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:

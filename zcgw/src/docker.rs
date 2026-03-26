@@ -27,6 +27,9 @@ pub struct DockerConfig {
     pub host_agents_dir: PathBuf,
     /// Base port for sequential host port assignment (default: 50051).
     pub base_port: u16,
+    /// Directory containing workspace template files (TOOLS.md, AGENTS.md, etc.).
+    /// Copied into new agent workspaces on first creation only.
+    pub workspace_templates_dir: PathBuf,
 }
 
 /// Result of creating an agent container.
@@ -50,6 +53,7 @@ impl Default for DockerConfig {
             agents_dir: PathBuf::from("docker/agents"),
             host_agents_dir: PathBuf::from("docker/agents"),
             base_port: 50051,
+            workspace_templates_dir: PathBuf::from("docker/config/workspace-templates"),
         }
     }
 }
@@ -169,13 +173,52 @@ pub fn port_from_address(addr: &str) -> Option<u16> {
 }
 
 /// Ensure the agent directory exists and write its config.
-async fn setup_agent_dir(agents_dir: &Path, id: &str, config_toml: &str) -> anyhow::Result<PathBuf> {
+/// On first creation (workspace dir doesn't exist yet), copies template files
+/// from `templates_dir` into the workspace. Existing workspaces are never overwritten.
+async fn setup_agent_dir(
+    agents_dir: &Path,
+    id: &str,
+    config_toml: &str,
+    templates_dir: &Path,
+) -> anyhow::Result<PathBuf> {
     let agent_dir = agents_dir.join(id);
     let data_dir = agent_dir.join("data");
     let zc_dir = data_dir.join(".zeroclaw").join("workspace");
     let config_path = agent_dir.join("config.toml");
 
+    let is_new = !zc_dir.exists();
     tokio::fs::create_dir_all(&zc_dir).await?;
+
+    // Copy workspace templates only for brand-new agents.
+    if is_new {
+        if let Ok(mut entries) = tokio::fs::read_dir(templates_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    let dest = zc_dir.join(entry.file_name());
+                    if let Err(e) = tokio::fs::copy(&path, &dest).await {
+                        warn!(
+                            src = %path.display(),
+                            dest = %dest.display(),
+                            error = %e,
+                            "failed to copy workspace template"
+                        );
+                    } else {
+                        debug!(file = %entry.file_name().to_string_lossy(), "copied workspace template");
+                    }
+                }
+            }
+        } else {
+            warn!(path = %templates_dir.display(), "workspace templates directory not found — skipping");
+        }
+
+        // Create standard subdirectories
+        for subdir in &["sessions", "memory", "state", "cron", "skills"] {
+            let _ = tokio::fs::create_dir_all(zc_dir.join(subdir)).await;
+        }
+
+        info!(agent = id, "provisioned new agent workspace from templates");
+    }
 
     // Guard: if config.toml was auto-created as a directory by a stale Docker
     // bind mount, remove it so we can write the actual file.
@@ -207,8 +250,14 @@ pub async fn create_agent(
         .output()
         .await;
 
-    // Set up agent directory with config and data
-    let _agent_dir = setup_agent_dir(&docker_config.agents_dir, id, agent_config_toml).await?;
+    // Set up agent directory with config and data (templates copied only for new agents)
+    let _agent_dir = setup_agent_dir(
+        &docker_config.agents_dir,
+        id,
+        agent_config_toml,
+        &docker_config.workspace_templates_dir,
+    )
+    .await?;
 
     // Use host-side paths for bind mounts (required when gateway runs inside Docker)
     let host_agent_dir = docker_config.host_agents_dir.join(id);

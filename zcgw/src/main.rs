@@ -139,6 +139,10 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(50051);
 
+    let workspace_templates_dir = std::env::var("ZCGW_WORKSPACE_TEMPLATES_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/etc/zcgw/workspace-templates"));
+
     let docker_config = docker::DockerConfig {
         image: std::env::var("ZCGW_DOCKER_IMAGE").unwrap_or_else(|_| "zeroclaw:latest".into()),
         network: std::env::var("ZCGW_DOCKER_NETWORK")
@@ -156,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         agents_dir,
         host_agents_dir,
         base_port,
+        workspace_templates_dir,
     };
 
     // Ensure agents directory exists
@@ -365,6 +370,7 @@ fn build_router(state: AppState) -> Router {
             post(admin::instance_action),
         )
         .route("/api/admin/template", get(admin::get_template))
+        .route("/api/admin/workspace-templates", get(admin::get_workspace_templates))
         // Connectors
         .route(
             "/api/instances/{id}/connectors",
