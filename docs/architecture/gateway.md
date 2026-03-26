@@ -41,7 +41,7 @@ The gateway is a lightweight multi-instance orchestrator that sits between clien
 | `main.rs` | Entrypoint. Loads config and env, builds Axum router, starts server. |
 | `config.rs` | `GatewayConfig` and `InstanceConfig` structs. TOML parsing. |
 | `registry.rs` | `InstanceRegistry` — manages instance metadata, gRPC client pool, and health state. |
-| `api.rs` | REST API handlers for instance-scoped operations (status, history, config, memory, chat, identity, connectors, MCP, Google, cron, skills). |
+| `api.rs` | REST API handlers for instance-scoped operations (status, history, config, memory, chat, identity, connectors, MCP, Google, Signal, cron, skills) and gateway-level integration management (Google OAuth, Signal device linking). |
 | `admin.rs` | Admin API handlers (stats, gateway config, instance CRUD, container actions). |
 | `ws.rs` | WebSocket chat handler. Bridges WS messages to gRPC `SendMessage` streams. |
 | `auth.rs` | Bearer token authentication middleware. |
@@ -96,6 +96,20 @@ desired_state = "running"
 | `ZCGW_AGENTS_DIR` | `docker/agents` | Directory for agent data (config and persistent storage). |
 | `ZCGW_HOST_AGENTS_DIR` | _(same as ZCGW_AGENTS_DIR)_ | Host-side path for bind mounts when gateway runs in Docker. |
 | `ZCGW_BASE_PORT` | `50051` | Base port for sequential host port assignment when creating agents. |
+
+#### Google Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` | _(empty)_ | Google OAuth app credentials JSON. Required for Google account linking. |
+| `ZEROCLAW_GOOGLE_REDIRECT_HOST` | _(empty)_ | Public hostname for OAuth redirect URI (e.g. `gateway.example.com:8080`). Required for Google account linking. |
+
+#### Signal Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ZCGW_SIGNAL_CLI_PATH` | `signal-cli` | Path to the `signal-cli` binary. |
+| `ZCGW_SIGNAL_CLI_PORT` | `8686` | HTTP port for the signal-cli JSON-RPC daemon. |
 
 API key environment variables (`VENICE_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) are automatically forwarded to new agent containers.
 

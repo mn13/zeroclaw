@@ -443,7 +443,7 @@ Update MCP server configuration. Requires restart.
 
 ---
 
-## Integrations
+## Integrations — Composio
 
 ### `GET /api/instances/{id}/integrations/composio`
 
@@ -463,48 +463,44 @@ Update Composio configuration.
 {"enabled": true, "api_key": "...", "entity_id": "default"}
 ```
 
-### `GET /api/instances/{id}/integrations/google`
+---
 
-Get Google integration status (GOGCLI-based OAuth).
+## Integrations — Google (Gateway-Level)
+
+Google accounts are authenticated once at the **gateway level** and then assigned to individual agent instances. This avoids re-authenticating for every agent and lets you share or restrict accounts across instances.
+
+Requires the following environment variables on the gateway:
+- `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` — Google OAuth app credentials JSON
+- `ZEROCLAW_GOOGLE_REDIRECT_HOST` — Public hostname for OAuth redirect URI
+
+### `GET /api/admin/google/accounts`
+
+List all gateway-authenticated Google accounts.
 
 **Response** `200 OK`:
 ```json
 {
-  "enabled": false,
-  "has_credentials": false,
-  "has_redirect_host": false,
-  "accounts": [],
-  "auto_whitelist_gog": true
+  "accounts": [
+    {
+      "email": "user@example.com",
+      "assigned_to": ["agent-ava", "agent-neo"],
+      "authenticated_at": "2026-03-17T10:00:00.000Z"
+    }
+  ]
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | boolean | Whether Google integration is active. |
-| `has_credentials` | boolean | Whether `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` is set on the gateway. |
-| `has_redirect_host` | boolean | Whether `ZEROCLAW_GOOGLE_REDIRECT_HOST` is set on the gateway. |
-| `accounts` | string[] | List of authorized Google account emails. |
-| `auto_whitelist_gog` | boolean | Auto-whitelist Google domains for the agent. |
+| `accounts[].email` | string | Google account email. |
+| `accounts[].assigned_to` | string[] | Agent instance IDs this account is assigned to. |
+| `accounts[].authenticated_at` | string | ISO 8601 timestamp of when the account was linked. |
 
-### `PUT /api/instances/{id}/integrations/google`
+### `POST /api/admin/google/auth/init`
 
-Update Google integration configuration.
+Start the Google OAuth flow at the gateway level. Runs GOG CLI's remote auth flow (step 1) and returns the Google consent URL. The frontend opens this URL in a new browser tab.
 
-**Request Body**:
-```json
-{
-  "enabled": true,
-  "auto_whitelist_gog": true
-}
-```
-
-All fields are optional.
-
-### `POST /api/instances/{id}/integrations/google/auth/init`
-
-Initiate the redirect-based Google OAuth flow. Writes the gateway's Google credentials to the agent container, starts GOG CLI's remote auth flow (step 1), and returns the Google consent URL. The frontend should redirect the browser to `auth_url`.
-
-Requires `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` and `ZEROCLAW_GOOGLE_REDIRECT_HOST` to be set on the gateway (returns `400` otherwise).
+Returns `400` if `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` or `ZEROCLAW_GOOGLE_REDIRECT_HOST` is not set.
 
 **Request Body**:
 ```json
@@ -523,14 +519,253 @@ Requires `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` and `ZEROCLAW_GOOGLE_REDIRECT_HOST` 
 Google redirects the browser here after the user grants consent. The gateway:
 1. Validates the `state` parameter against its pending-auth map
 2. Completes the token exchange via GOG CLI (step 2)
-3. Adds the email to the agent's `google.accounts` config
+3. Adds the email to the gateway's Google accounts store
 4. Redirects the browser to `/integrations?google=success&email=<email>` (or `?google=error&message=<msg>` on failure)
 
 **Query Parameters** (set by Google): `code`, `state`, `error`
 
+### `POST /api/admin/google/auth/complete`
+
+Alternative to the automatic `/oauth2/callback` redirect. The user manually pastes the callback URL from the browser after granting consent. Useful when the gateway is not publicly reachable for redirects.
+
+Returns `400` if `ZEROCLAW_GOOGLE_REDIRECT_HOST` is not set or if the callback URL is invalid.
+
+**Request Body**:
+```json
+{"callback_url": "http://gateway:8080/oauth2/callback?code=...&state=...", "email": "user@example.com"}
+```
+
+**Response** `200 OK`:
+```json
+{"ok": true, "email": "user@example.com"}
+```
+
+### `DELETE /api/admin/google/accounts/{email}`
+
+Remove a Google account from the gateway and all assigned agent instances. Also removes the account from the GOG CLI keyring.
+
+**Response** `200 OK`:
+```json
+{"ok": true}
+```
+
+---
+
+## Integrations — Google (Per-Instance)
+
+### `GET /api/instances/{id}/integrations/google`
+
+Get Google integration status for an agent instance.
+
+**Response** `200 OK`:
+```json
+{
+  "enabled": false,
+  "has_credentials": false,
+  "has_redirect_host": false,
+  "accounts": [],
+  "auto_whitelist_gog": true,
+  "gateway_accounts": [
+    {
+      "email": "user@example.com",
+      "assigned_to": ["agent-ava"],
+      "authenticated_at": "2026-03-17T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Whether Google integration is active for this agent. |
+| `has_credentials` | boolean | Whether `ZEROCLAW_GOOGLE_CREDENTIALS_JSON` is set on the gateway. |
+| `has_redirect_host` | boolean | Whether `ZEROCLAW_GOOGLE_REDIRECT_HOST` is set on the gateway. |
+| `accounts` | string[] | Google account emails assigned to this agent. |
+| `auto_whitelist_gog` | boolean | Auto-whitelist Google domains for the agent. |
+| `gateway_accounts` | object[] | All gateway-level Google accounts (for UI assignment dropdowns). |
+
+### `PUT /api/instances/{id}/integrations/google`
+
+Update Google integration configuration for an agent instance. All fields are optional.
+
+**Request Body**:
+```json
+{
+  "enabled": true,
+  "auto_whitelist_gog": true,
+  "assign_accounts": ["user@example.com"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Enable/disable Google integration. |
+| `auto_whitelist_gog` | boolean | Auto-whitelist Google domains. |
+| `assign_accounts` | string[] | Gateway Google accounts to assign to this agent. Each email must exist in the gateway store (returns `400` otherwise). Copies the GOG CLI keyring to the agent. |
+
 ### `DELETE /api/instances/{id}/integrations/google/accounts/{email}`
 
-Remove a Google account from the agent's configuration.
+Unassign a Google account from the agent's configuration.
+
+**Response** `200 OK`:
+```json
+{"ok": true}
+```
+
+---
+
+## Integrations — Signal (Gateway-Level)
+
+Signal connections are managed at the gateway level via `signal-cli`. Phone numbers are linked as secondary devices, then assigned to individual agent instances.
+
+### `GET /api/admin/signal/connections`
+
+List all gateway-level Signal connections and daemon status.
+
+**Response** `200 OK`:
+```json
+{
+  "connections": [
+    {
+      "name": "support-line",
+      "account": "+1234567890",
+      "linked_at": "2026-03-17T10:00:00.000Z",
+      "assigned_to": ["agent-ava"]
+    }
+  ],
+  "daemon_running": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `connections[].name` | string | User-chosen label for this connection. |
+| `connections[].account` | string | E.164 phone number. |
+| `connections[].linked_at` | string | ISO 8601 timestamp of when the device was linked. |
+| `connections[].assigned_to` | string[] | Agent instance IDs this connection is assigned to. |
+| `daemon_running` | boolean | Whether the signal-cli daemon process is running. |
+
+### `POST /api/admin/signal/link/start`
+
+Start a Signal device-link flow. Spawns `signal-cli link` which outputs a `tsdevice://` URI for QR code scanning. The signal-cli daemon is temporarily stopped during linking (it holds a lock on the data directory).
+
+Returns `429` if too many link sessions are already pending. Returns `503` if `signal-cli` binary is not found.
+
+**Request Body**:
+```json
+{"device_name": "ZeroClaw"}
+```
+
+`device_name` defaults to `"ZeroClaw"` if omitted.
+
+**Response** `200 OK`:
+```json
+{"link_id": "uuid-123", "device_link_uri": "tsdevice:/?uuid=...&pub_key=..."}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `link_id` | string | Pending-link session ID (pass to `/link/finish`). |
+| `device_link_uri` | string | URI to render as a QR code. The user scans this with Signal on their phone. |
+
+### `POST /api/admin/signal/link/finish`
+
+Complete a Signal device-link flow after the user has scanned the QR code. Saves the connection to the gateway store and restarts the signal-cli daemon.
+
+Returns `404` if the link session has expired. Returns `409` if the connection name already exists. Returns `400` if the QR code was not scanned in time.
+
+**Request Body**:
+```json
+{"link_id": "uuid-123", "name": "support-line", "account": "+1234567890"}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `link_id` | string | The `link_id` from `/link/start`. |
+| `name` | string | User-chosen label for this connection. Must be unique. |
+| `account` | string | E.164 phone number that was linked. |
+
+**Response** `200 OK`:
+```json
+{"ok": true, "name": "support-line"}
+```
+
+### `DELETE /api/admin/signal/connections/{name}`
+
+Remove a Signal connection from the gateway and unassign from all agent instances. If no connections remain, the signal-cli daemon is stopped.
+
+**Response** `200 OK`:
+```json
+{"ok": true}
+```
+
+---
+
+## Integrations — Signal (Per-Instance)
+
+### `GET /api/instances/{id}/integrations/signal`
+
+Get Signal integration status for an agent instance.
+
+**Response** `200 OK`:
+```json
+{
+  "enabled": true,
+  "account": "+1234567890",
+  "http_url": "http://zcgw:8686/api/v1/rpc",
+  "connection_name": "support-line",
+  "gateway_connections": [
+    {
+      "name": "support-line",
+      "account": "+1234567890",
+      "linked_at": "2026-03-17T10:00:00.000Z",
+      "assigned_to": ["agent-ava"]
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Whether a Signal connection is assigned to this agent. |
+| `account` | string | The E.164 phone number configured for this agent. |
+| `http_url` | string | The signal-cli HTTP API URL configured for the agent. |
+| `connection_name` | string \| null | Name of the matching gateway connection (if found). |
+| `gateway_connections` | object[] | All gateway-level Signal connections (for UI assignment dropdowns). |
+
+### `PUT /api/instances/{id}/integrations/signal`
+
+Assign a gateway-level Signal connection to an agent instance. Writes Signal channel configuration into the agent's config.
+
+Returns `404` if the named connection does not exist in the gateway store.
+
+**Request Body**:
+```json
+{
+  "connection": "support-line",
+  "group_id": "dm",
+  "allowed_from": ["*"],
+  "ignore_attachments": false,
+  "ignore_stories": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `connection` | string | _(required)_ | Name of the gateway-level Signal connection to assign. |
+| `group_id` | string | _(none)_ | `"dm"` for DMs only, or a specific group ID. |
+| `allowed_from` | string[] | `["*"]` | Allowed sender numbers. `"*"` means all. |
+| `ignore_attachments` | boolean | `false` | Skip attachment-only messages. |
+| `ignore_stories` | boolean | `true` | Skip story messages. |
+
+**Response** `200 OK`:
+```json
+{"ok": true}
+```
+
+### `DELETE /api/instances/{id}/integrations/signal/{name}`
+
+Unassign a Signal connection from an agent instance. Removes the `[channels_config.signal]` section from the agent's config.
 
 **Response** `200 OK`:
 ```json
