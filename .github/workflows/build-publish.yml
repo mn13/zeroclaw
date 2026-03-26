@@ -46,7 +46,9 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
-          tags: ${{ env.IMAGE_BASE }}/${{ matrix.suffix }}:${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE_BASE }}/${{ matrix.suffix }}:${{ github.sha }}
+            ${{ env.IMAGE_BASE }}/${{ matrix.suffix }}:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
