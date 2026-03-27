@@ -9,8 +9,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use tonic::metadata::MetadataValue;
 use tokio_stream::StreamExt;
+use tonic::metadata::MetadataValue;
 
 /// Attach gRPC auth metadata to a request.
 fn authed_request<T>(body: T, secret: &str) -> tonic::Request<T> {
@@ -41,7 +41,9 @@ fn validate_agent_id(id: &str) -> Result<(), (StatusCode, Json<serde_json::Value
     if id.contains('/') || id.contains('\\') || id.contains('\0') || id.contains("..") {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid agent ID: must not contain path separators or '..'" })),
+            Json(
+                serde_json::json!({ "error": "Invalid agent ID: must not contain path separators or '..'" }),
+            ),
         ));
     }
     // Allow alphanumeric, hyphens, underscores, dots (for docker container names)
@@ -51,7 +53,9 @@ fn validate_agent_id(id: &str) -> Result<(), (StatusCode, Json<serde_json::Value
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid agent ID: only alphanumeric, hyphens, underscores, and dots allowed" })),
+            Json(
+                serde_json::json!({ "error": "Invalid agent ID: only alphanumeric, hyphens, underscores, and dots allowed" }),
+            ),
         ));
     }
     Ok(())
@@ -73,7 +77,9 @@ fn validate_device_name(name: &str) -> Result<(), (StatusCode, Json<serde_json::
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Device name must contain only letters, numbers, spaces, hyphens, and underscores" })),
+            Json(
+                serde_json::json!({ "error": "Device name must contain only letters, numbers, spaces, hyphens, and underscores" }),
+            ),
         ));
     }
     Ok(())
@@ -93,7 +99,9 @@ fn validate_connection_name(name: &str) -> Result<(), (StatusCode, Json<serde_js
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Connection name must contain only letters, numbers, hyphens, and underscores" })),
+            Json(
+                serde_json::json!({ "error": "Connection name must contain only letters, numbers, hyphens, and underscores" }),
+            ),
         ));
     }
     Ok(())
@@ -106,7 +114,9 @@ fn validate_e164(number: &str) -> Result<(), (StatusCode, Json<serde_json::Value
     if digits.is_empty() || digits.len() > 15 || !digits.chars().all(|c| c.is_ascii_digit()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid phone number: must be E.164 format (e.g. +1234567890)" })),
+            Json(
+                serde_json::json!({ "error": "Invalid phone number: must be E.164 format (e.g. +1234567890)" }),
+            ),
         ));
     }
     Ok(())
@@ -146,10 +156,7 @@ pub async fn list_instances(State(state): State<AppState>) -> impl IntoResponse 
             id: id.clone(),
             display_name: cfg.display_name.clone(),
             grpc_address: cfg.grpc_address.clone(),
-            health: health
-                .get(id)
-                .cloned()
-                .unwrap_or(InstanceHealth::Unknown),
+            health: health.get(id).cloned().unwrap_or(InstanceHealth::Unknown),
         })
         .collect();
     instances.sort_by(|a, b| a.id.cmp(&b.id));
@@ -169,7 +176,10 @@ pub async fn get_status(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     let resp = client
-        .get_status(authed_request(proto::GetStatusRequest {}, &state.grpc_secret))
+        .get_status(authed_request(
+            proto::GetStatusRequest {},
+            &state.grpc_secret,
+        ))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
@@ -273,7 +283,10 @@ pub async fn get_config(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     let resp = client
-        .get_config(authed_request(proto::GetConfigRequest {}, &state.grpc_secret))
+        .get_config(authed_request(
+            proto::GetConfigRequest {},
+            &state.grpc_secret,
+        ))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
@@ -334,7 +347,10 @@ pub async fn list_tools(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     let resp = client
-        .list_tools(authed_request(proto::ListToolsRequest {}, &state.grpc_secret))
+        .list_tools(authed_request(
+            proto::ListToolsRequest {},
+            &state.grpc_secret,
+        ))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
@@ -584,7 +600,9 @@ pub async fn get_identity_file(
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(Json(serde_json::json!({ "filename": filename, "content": content })))
+    Ok(Json(
+        serde_json::json!({ "filename": filename, "content": content }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -784,95 +802,382 @@ fn channel_schema() -> Vec<ChannelDescriptor> {
             channel_type: "telegram",
             label: "Telegram",
             fields: vec![
-                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Telegram bot token from @BotFather" },
-                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Telegram user IDs or usernames. Empty = deny all" },
-                ChannelField { name: "stream_mode", label: "Stream Mode", field_type: "select:off,partial", required: false, sensitive: false, help: "off = single message, partial = progressive edits" },
-                ChannelField { name: "draft_update_interval_ms", label: "Draft Update Interval (ms)", field_type: "u64", required: false, sensitive: false, help: "Min interval between draft edits (default: 1000)" },
-                ChannelField { name: "interrupt_on_new_message", label: "Interrupt on New Message", field_type: "bool", required: false, sensitive: false, help: "Cancel in-flight request on new message from same sender" },
-                ChannelField { name: "mention_only", label: "Mention Only", field_type: "bool", required: false, sensitive: false, help: "Only respond to @-mentions in groups (DMs always processed)" },
+                ChannelField {
+                    name: "bot_token",
+                    label: "Bot Token",
+                    field_type: "string",
+                    required: true,
+                    sensitive: true,
+                    help: "Telegram bot token from @BotFather",
+                },
+                ChannelField {
+                    name: "allowed_users",
+                    label: "Allowed Users",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Telegram user IDs or usernames. Empty = deny all",
+                },
+                ChannelField {
+                    name: "stream_mode",
+                    label: "Stream Mode",
+                    field_type: "select:off,partial",
+                    required: false,
+                    sensitive: false,
+                    help: "off = single message, partial = progressive edits",
+                },
+                ChannelField {
+                    name: "draft_update_interval_ms",
+                    label: "Draft Update Interval (ms)",
+                    field_type: "u64",
+                    required: false,
+                    sensitive: false,
+                    help: "Min interval between draft edits (default: 1000)",
+                },
+                ChannelField {
+                    name: "interrupt_on_new_message",
+                    label: "Interrupt on New Message",
+                    field_type: "bool",
+                    required: false,
+                    sensitive: false,
+                    help: "Cancel in-flight request on new message from same sender",
+                },
+                ChannelField {
+                    name: "mention_only",
+                    label: "Mention Only",
+                    field_type: "bool",
+                    required: false,
+                    sensitive: false,
+                    help: "Only respond to @-mentions in groups (DMs always processed)",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "discord",
             label: "Discord",
             fields: vec![
-                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Discord bot token" },
-                ChannelField { name: "guild_id", label: "Guild ID", field_type: "string", required: false, sensitive: false, help: "Restrict to a specific guild" },
-                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Allowed user IDs" },
-                ChannelField { name: "listen_to_bots", label: "Listen to Bots", field_type: "bool", required: false, sensitive: false, help: "Process messages from other bots" },
-                ChannelField { name: "mention_only", label: "Mention Only", field_type: "bool", required: false, sensitive: false, help: "Only respond when mentioned" },
+                ChannelField {
+                    name: "bot_token",
+                    label: "Bot Token",
+                    field_type: "string",
+                    required: true,
+                    sensitive: true,
+                    help: "Discord bot token",
+                },
+                ChannelField {
+                    name: "guild_id",
+                    label: "Guild ID",
+                    field_type: "string",
+                    required: false,
+                    sensitive: false,
+                    help: "Restrict to a specific guild",
+                },
+                ChannelField {
+                    name: "allowed_users",
+                    label: "Allowed Users",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Allowed user IDs",
+                },
+                ChannelField {
+                    name: "listen_to_bots",
+                    label: "Listen to Bots",
+                    field_type: "bool",
+                    required: false,
+                    sensitive: false,
+                    help: "Process messages from other bots",
+                },
+                ChannelField {
+                    name: "mention_only",
+                    label: "Mention Only",
+                    field_type: "bool",
+                    required: false,
+                    sensitive: false,
+                    help: "Only respond when mentioned",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "slack",
             label: "Slack",
             fields: vec![
-                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Slack bot token (xoxb-...)" },
-                ChannelField { name: "app_token", label: "App Token", field_type: "string", required: false, sensitive: true, help: "Socket mode app token (xapp-...)" },
-                ChannelField { name: "channel_id", label: "Channel ID", field_type: "string", required: false, sensitive: false, help: "Default channel ID" },
-                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Allowed user IDs" },
+                ChannelField {
+                    name: "bot_token",
+                    label: "Bot Token",
+                    field_type: "string",
+                    required: true,
+                    sensitive: true,
+                    help: "Slack bot token (xoxb-...)",
+                },
+                ChannelField {
+                    name: "app_token",
+                    label: "App Token",
+                    field_type: "string",
+                    required: false,
+                    sensitive: true,
+                    help: "Socket mode app token (xapp-...)",
+                },
+                ChannelField {
+                    name: "channel_id",
+                    label: "Channel ID",
+                    field_type: "string",
+                    required: false,
+                    sensitive: false,
+                    help: "Default channel ID",
+                },
+                ChannelField {
+                    name: "allowed_users",
+                    label: "Allowed Users",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Allowed user IDs",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "whatsapp",
             label: "WhatsApp",
             fields: vec![
-                ChannelField { name: "access_token", label: "Access Token", field_type: "string", required: false, sensitive: true, help: "Cloud API access token" },
-                ChannelField { name: "phone_number_id", label: "Phone Number ID", field_type: "string", required: false, sensitive: false, help: "Cloud API phone number ID" },
-                ChannelField { name: "session_path", label: "Session Path", field_type: "string", required: false, sensitive: false, help: "Web client session path (alternative to Cloud)" },
-                ChannelField { name: "allowed_numbers", label: "Allowed Numbers", field_type: "string_list", required: false, sensitive: false, help: "Allowed phone numbers" },
+                ChannelField {
+                    name: "access_token",
+                    label: "Access Token",
+                    field_type: "string",
+                    required: false,
+                    sensitive: true,
+                    help: "Cloud API access token",
+                },
+                ChannelField {
+                    name: "phone_number_id",
+                    label: "Phone Number ID",
+                    field_type: "string",
+                    required: false,
+                    sensitive: false,
+                    help: "Cloud API phone number ID",
+                },
+                ChannelField {
+                    name: "session_path",
+                    label: "Session Path",
+                    field_type: "string",
+                    required: false,
+                    sensitive: false,
+                    help: "Web client session path (alternative to Cloud)",
+                },
+                ChannelField {
+                    name: "allowed_numbers",
+                    label: "Allowed Numbers",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Allowed phone numbers",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "email",
             label: "Email",
             fields: vec![
-                ChannelField { name: "imap_host", label: "IMAP Host", field_type: "string", required: true, sensitive: false, help: "IMAP server hostname" },
-                ChannelField { name: "smtp_host", label: "SMTP Host", field_type: "string", required: true, sensitive: false, help: "SMTP server hostname" },
-                ChannelField { name: "username", label: "Username", field_type: "string", required: true, sensitive: false, help: "Email account username" },
-                ChannelField { name: "password", label: "Password", field_type: "string", required: true, sensitive: true, help: "Email account password" },
-                ChannelField { name: "from_address", label: "From Address", field_type: "string", required: true, sensitive: false, help: "Sender email address" },
-                ChannelField { name: "allowed_senders", label: "Allowed Senders", field_type: "string_list", required: false, sensitive: false, help: "Allowed sender addresses" },
+                ChannelField {
+                    name: "imap_host",
+                    label: "IMAP Host",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "IMAP server hostname",
+                },
+                ChannelField {
+                    name: "smtp_host",
+                    label: "SMTP Host",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "SMTP server hostname",
+                },
+                ChannelField {
+                    name: "username",
+                    label: "Username",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "Email account username",
+                },
+                ChannelField {
+                    name: "password",
+                    label: "Password",
+                    field_type: "string",
+                    required: true,
+                    sensitive: true,
+                    help: "Email account password",
+                },
+                ChannelField {
+                    name: "from_address",
+                    label: "From Address",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "Sender email address",
+                },
+                ChannelField {
+                    name: "allowed_senders",
+                    label: "Allowed Senders",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Allowed sender addresses",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "signal",
             label: "Signal",
             fields: vec![
-                ChannelField { name: "http_url", label: "HTTP URL", field_type: "string", required: true, sensitive: false, help: "signal-cli REST API URL" },
-                ChannelField { name: "account", label: "Account", field_type: "string", required: true, sensitive: false, help: "Signal account phone number" },
-                ChannelField { name: "group_id", label: "Group ID", field_type: "string", required: false, sensitive: false, help: "Signal group ID" },
-                ChannelField { name: "allowed_from", label: "Allowed From", field_type: "string_list", required: false, sensitive: false, help: "Allowed sender numbers" },
+                ChannelField {
+                    name: "http_url",
+                    label: "HTTP URL",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "signal-cli REST API URL",
+                },
+                ChannelField {
+                    name: "account",
+                    label: "Account",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "Signal account phone number",
+                },
+                ChannelField {
+                    name: "group_id",
+                    label: "Group ID",
+                    field_type: "string",
+                    required: false,
+                    sensitive: false,
+                    help: "Signal group ID",
+                },
+                ChannelField {
+                    name: "allowed_from",
+                    label: "Allowed From",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Allowed sender numbers",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "matrix",
             label: "Matrix",
             fields: vec![
-                ChannelField { name: "homeserver", label: "Homeserver", field_type: "string", required: true, sensitive: false, help: "Matrix homeserver URL" },
-                ChannelField { name: "access_token", label: "Access Token", field_type: "string", required: true, sensitive: true, help: "Matrix access token" },
-                ChannelField { name: "room_id", label: "Room ID", field_type: "string", required: true, sensitive: false, help: "Room to join" },
-                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: true, sensitive: false, help: "Allowed Matrix user IDs" },
+                ChannelField {
+                    name: "homeserver",
+                    label: "Homeserver",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "Matrix homeserver URL",
+                },
+                ChannelField {
+                    name: "access_token",
+                    label: "Access Token",
+                    field_type: "string",
+                    required: true,
+                    sensitive: true,
+                    help: "Matrix access token",
+                },
+                ChannelField {
+                    name: "room_id",
+                    label: "Room ID",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "Room to join",
+                },
+                ChannelField {
+                    name: "allowed_users",
+                    label: "Allowed Users",
+                    field_type: "string_list",
+                    required: true,
+                    sensitive: false,
+                    help: "Allowed Matrix user IDs",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "irc",
             label: "IRC",
             fields: vec![
-                ChannelField { name: "server", label: "Server", field_type: "string", required: true, sensitive: false, help: "IRC server address" },
-                ChannelField { name: "nickname", label: "Nickname", field_type: "string", required: true, sensitive: false, help: "Bot nickname" },
-                ChannelField { name: "channels", label: "Channels", field_type: "string_list", required: false, sensitive: false, help: "Channels to join" },
-                ChannelField { name: "server_password", label: "Server Password", field_type: "string", required: false, sensitive: true, help: "Server password" },
+                ChannelField {
+                    name: "server",
+                    label: "Server",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "IRC server address",
+                },
+                ChannelField {
+                    name: "nickname",
+                    label: "Nickname",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "Bot nickname",
+                },
+                ChannelField {
+                    name: "channels",
+                    label: "Channels",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Channels to join",
+                },
+                ChannelField {
+                    name: "server_password",
+                    label: "Server Password",
+                    field_type: "string",
+                    required: false,
+                    sensitive: true,
+                    help: "Server password",
+                },
             ],
         },
         ChannelDescriptor {
             channel_type: "mattermost",
             label: "Mattermost",
             fields: vec![
-                ChannelField { name: "url", label: "URL", field_type: "string", required: true, sensitive: false, help: "Mattermost server URL" },
-                ChannelField { name: "bot_token", label: "Bot Token", field_type: "string", required: true, sensitive: true, help: "Mattermost bot token" },
-                ChannelField { name: "channel_id", label: "Channel ID", field_type: "string", required: false, sensitive: false, help: "Default channel ID" },
-                ChannelField { name: "allowed_users", label: "Allowed Users", field_type: "string_list", required: false, sensitive: false, help: "Allowed user IDs" },
+                ChannelField {
+                    name: "url",
+                    label: "URL",
+                    field_type: "string",
+                    required: true,
+                    sensitive: false,
+                    help: "Mattermost server URL",
+                },
+                ChannelField {
+                    name: "bot_token",
+                    label: "Bot Token",
+                    field_type: "string",
+                    required: true,
+                    sensitive: true,
+                    help: "Mattermost bot token",
+                },
+                ChannelField {
+                    name: "channel_id",
+                    label: "Channel ID",
+                    field_type: "string",
+                    required: false,
+                    sensitive: false,
+                    help: "Default channel ID",
+                },
+                ChannelField {
+                    name: "allowed_users",
+                    label: "Allowed Users",
+                    field_type: "string_list",
+                    required: false,
+                    sensitive: false,
+                    help: "Allowed user IDs",
+                },
             ],
         },
     ]
@@ -893,8 +1198,7 @@ pub async fn get_connectors(
     if let toml::Value::Table(ref mut channels) = channels_config {
         for (_key, val) in channels.iter_mut() {
             if let toml::Value::Table(ref mut ch) = val {
-                ch.entry("enabled")
-                    .or_insert(toml::Value::Boolean(true));
+                ch.entry("enabled").or_insert(toml::Value::Boolean(true));
             }
         }
     }
@@ -924,18 +1228,15 @@ pub async fn update_connectors(
     // Convert JSON to toml, then clean up:
     // - Strip the UI-only "enabled" field from each channel sub-table
     // - Remove channel sub-tables where enabled was false (i.e. disabled channels)
-    let mut channels_toml: toml::Value = serde_json::from_value(body.channels_config)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let mut channels_toml: toml::Value =
+        serde_json::from_value(body.channels_config).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     if let toml::Value::Table(ref mut channels) = channels_toml {
         let keys: Vec<String> = channels.keys().cloned().collect();
         for key in keys {
             let remove = if let Some(toml::Value::Table(ref mut ch)) = channels.get_mut(&key) {
                 // Check if enabled is false — if so, remove the whole channel
-                let enabled = ch
-                    .get("enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                let enabled = ch.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
                 // Always strip the "enabled" field — not part of the agent schema
                 ch.remove("enabled");
                 !enabled
@@ -950,9 +1251,7 @@ pub async fn update_connectors(
 
     // Ensure required `cli` field is present (defaults to true).
     if let toml::Value::Table(ref mut channels) = channels_toml {
-        channels
-            .entry("cli")
-            .or_insert(toml::Value::Boolean(true));
+        channels.entry("cli").or_insert(toml::Value::Boolean(true));
     }
 
     if let toml::Value::Table(ref mut t) = config {
@@ -1010,6 +1309,672 @@ pub async fn update_mcp_servers(
 
 // ---------- Integrations: Composio ----------
 
+/// Shared HTTP client for Composio API calls.
+fn composio_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("failed to build reqwest client")
+}
+
+/// Persist the Composio store to disk.
+async fn persist_composio_store(state: &AppState) -> Result<(), StatusCode> {
+    let store = state.composio_store.read().await;
+    let path = state
+        .docker_config
+        .agents_dir
+        .join(".composio")
+        .join("store.json");
+    let content =
+        serde_json::to_string_pretty(&*store).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// Return the prefix used for all Composio identifiers owned by this gateway.
+///
+/// Without a tenant: `"zcgw-"`. With tenant `"acme"`: `"zcgw-acme-"`.
+fn composio_prefix(tenant_id: Option<&str>) -> String {
+    match tenant_id {
+        Some(tid) => format!("zcgw-{}-", tid),
+        None => "zcgw-".to_string(),
+    }
+}
+
+/// Generate a Composio user_id for a given instance.
+fn composio_user_id(tenant_id: Option<&str>, instance_id: &str) -> String {
+    format!("{}{}", composio_prefix(tenant_id), instance_id)
+}
+
+/// Generate a Composio MCP server name for a given toolkit slug.
+fn composio_mcp_server_name(tenant_id: Option<&str>, slug: &str) -> String {
+    format!("{}{}", composio_prefix(tenant_id), slug)
+}
+
+/// Parsed fields from a Composio connected account API response.
+struct ComposioAccountFields {
+    toolkit_slug: String,
+    display_name: String,
+    user_id: String,
+    status: String,
+    connected_at: String,
+}
+
+/// Extract connection fields from a Composio v3 API connected_account object.
+///
+/// The v3 API nests the toolkit slug under `toolkit.slug` and uses `user_id`
+/// directly (not `clientUniqueUserId`). The `created_at` field replaces `createdAt`.
+fn parse_composio_account(item: &serde_json::Value) -> ComposioAccountFields {
+    let toolkit_slug = item
+        .get("toolkit")
+        .and_then(|t| t.get("slug"))
+        .and_then(|v| v.as_str())
+        // Fallback for single-account fetch endpoint which may use flat fields
+        .or_else(|| item.get("appName").and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
+        .to_string();
+
+    let display_name = item
+        .get("connectionParams")
+        .and_then(|v| v.get("user_email"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&toolkit_slug)
+        .to_string();
+
+    let user_id = item
+        .get("user_id")
+        .or_else(|| item.get("clientUniqueUserId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    let status = item
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ACTIVE")
+        .to_string();
+
+    let connected_at = item
+        .get("created_at")
+        .or_else(|| item.get("createdAt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    ComposioAccountFields {
+        toolkit_slug,
+        display_name,
+        user_id,
+        status,
+        connected_at,
+    }
+}
+
+/// Resolve an app name (e.g. "gmail") to a Composio auth_config_id.
+async fn resolve_composio_auth_config_id(
+    api_key: &str,
+    app_name: &str,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let client = composio_client();
+    let resp = client
+        .get("https://backend.composio.dev/api/v3/auth_configs")
+        .header("x-api-key", api_key)
+        .query(&[("toolkit_slug", app_name)])
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to query Composio auth_configs");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("Composio API error: {}", e) })),
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        tracing::error!(status = %status, body = %body, "Composio auth_configs request failed");
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Composio API returned {}", status) })),
+        ));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Invalid Composio response: {}", e) })),
+        )
+    })?;
+
+    // Extract the first auth_config_id from the response
+    let items = data.get("items").and_then(|v| v.as_array());
+    if let Some(items) = items {
+        if let Some(first) = items.first() {
+            if let Some(id) = first.get("id").and_then(|v| v.as_str()) {
+                return Ok(id.to_string());
+            }
+        }
+    }
+
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(
+            serde_json::json!({ "error": format!("No auth config found for app '{}'", app_name) }),
+        ),
+    ))
+}
+
+/// Fetch details of a connected account from Composio.
+async fn fetch_composio_connected_account(
+    api_key: &str,
+    account_id: &str,
+) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    let client = composio_client();
+    let resp = client
+        .get(format!(
+            "https://backend.composio.dev/api/v3/connected_accounts/{}",
+            account_id
+        ))
+        .header("x-api-key", api_key)
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("Composio API error: {}", e) })),
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Composio API returned {}", status) })),
+        ));
+    }
+
+    resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Invalid Composio response: {}", e) })),
+        )
+    })
+}
+
+// ---- Gateway-level handlers ----
+
+pub async fn get_composio_gateway_config(State(state): State<AppState>) -> impl IntoResponse {
+    let store = state.composio_store.read().await;
+    Json(serde_json::json!({
+        "has_api_key": state.composio_api_key.is_some(),
+        "total_connections": store.connections.len(),
+        "mcp_servers": store.mcp_servers.len(),
+        "tenant_id": state.tenant_id,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateComposioGatewayConfigBody {
+    #[allow(dead_code)]
+    api_key: Option<String>,
+}
+
+pub async fn update_composio_gateway_config(
+    State(state): State<AppState>,
+    Json(_body): Json<UpdateComposioGatewayConfigBody>,
+) -> impl IntoResponse {
+    // API key is currently read from env var at startup — runtime updates
+    // would require wrapping composio_api_key in Arc<RwLock<>>.
+    // For now, just note that a restart is needed.
+    Json(serde_json::json!({
+        "ok": true,
+        "has_api_key": state.composio_api_key.is_some(),
+        "note": "API key is read from COMPOSIO_API_KEY env var. Restart gateway after changing.",
+    }))
+}
+
+pub async fn list_composio_connections(State(state): State<AppState>) -> impl IntoResponse {
+    let store = state.composio_store.read().await;
+    Json(serde_json::json!({
+        "connections": store.connections,
+    }))
+}
+
+/// Sync connections from the Composio API into the local store.
+///
+/// Queries Composio for all connected accounts, merges new/updated ones into
+/// the gateway store, and returns the updated connection list. This is the
+/// primary mechanism for discovering connections — the OAuth callback is a
+/// best-effort supplement.
+pub async fn sync_composio_connections(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let api_key = state.composio_api_key.as_ref().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "COMPOSIO_API_KEY not configured" })),
+        )
+    })?;
+
+    let client = composio_client();
+    let resp = client
+        .get("https://backend.composio.dev/api/v3/connected_accounts")
+        .header("x-api-key", api_key)
+        .query(&[("showActiveOnly", "true")])
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("Composio API error: {}", e) })),
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(
+                serde_json::json!({ "error": format!("Composio API returned {}: {}", status, body) }),
+            ),
+        ));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Invalid Composio response: {}", e) })),
+        )
+    })?;
+
+    // Parse connected accounts from response
+    let items = data
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut synced = 0usize;
+    let mut store = state.composio_store.write().await;
+    let prefix = composio_prefix(state.tenant_id.as_deref());
+
+    for item in &items {
+        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+
+        let fields = parse_composio_account(item);
+
+        // Only import connections with our prefix (tenant-scoped when configured)
+        if !fields.user_id.starts_with(&prefix) {
+            continue;
+        }
+
+        // Check if connection already exists in store
+        if let Some(existing) = store.connections.iter_mut().find(|c| c.id == id) {
+            // Update fields from live Composio data
+            existing.status = fields.status;
+            existing.display_name = fields.display_name.clone();
+            existing.toolkit_slug = fields.toolkit_slug.clone();
+            // Fix name if it was stored as "unknown" from old parsing
+            if existing.name == "unknown" || existing.name.is_empty() {
+                existing.name = fields.display_name;
+            }
+        } else {
+            // New connection — add it (unassigned; user assigns via UI)
+            store.connections.push(crate::app_state::ComposioConnection {
+                id: id.to_string(),
+                name: fields.toolkit_slug.clone(),
+                toolkit_slug: fields.toolkit_slug,
+                display_name: fields.display_name,
+                user_id: fields.user_id,
+                assigned_to: vec![],
+                status: fields.status,
+                connected_at: if fields.connected_at.is_empty() {
+                    chrono::Utc::now().to_rfc3339()
+                } else {
+                    fields.connected_at
+                },
+            });
+            synced += 1;
+        }
+    }
+
+    drop(store);
+    persist_composio_store(&state).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to persist store" })),
+        )
+    })?;
+
+    let store = state.composio_store.read().await;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "synced": synced,
+        "total_from_composio": items.len(),
+        "connections": store.connections,
+    })))
+}
+
+pub async fn list_composio_apps(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let api_key = state.composio_api_key.as_ref().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "COMPOSIO_API_KEY not configured" })),
+        )
+    })?;
+
+    let client = composio_client();
+    let resp = client
+        .get("https://backend.composio.dev/api/v3/auth_configs")
+        .header("x-api-key", api_key)
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("Composio API error: {}", e) })),
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(
+                serde_json::json!({ "error": format!("Composio API returned {}: {}", status, body) }),
+            ),
+        ));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Invalid Composio response: {}", e) })),
+        )
+    })?;
+
+    // Extract the items array and map to a simplified list
+    let items = data
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let apps: Vec<serde_json::Value> = items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "id": item.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                "toolkit_slug": item.get("toolkit_slug").or_else(|| item.get("appName")).and_then(|v| v.as_str()).unwrap_or(""),
+                "name": item.get("name").or_else(|| item.get("appName")).and_then(|v| v.as_str()).unwrap_or(""),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "apps": apps })))
+}
+
+#[derive(Deserialize)]
+pub struct ComposioConnectInitBody {
+    instance_id: Option<String>,
+    name: Option<String>,
+    app: Option<String>,
+    auth_config_id: Option<String>,
+}
+
+pub async fn composio_connect_init(
+    State(state): State<AppState>,
+    Json(body): Json<ComposioConnectInitBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if let Some(ref id) = body.instance_id {
+        validate_agent_id(id)?;
+    }
+
+    let api_key = state.composio_api_key.as_ref().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "COMPOSIO_API_KEY not configured" })),
+        )
+    })?;
+
+    let redirect_host = state.composio_redirect_host.as_ref().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "COMPOSIO_REDIRECT_HOST not configured (set COMPOSIO_REDIRECT_HOST or ZEROCLAW_GOOGLE_REDIRECT_HOST)" })),
+        )
+    })?;
+
+    // Resolve auth_config_id
+    let auth_config_id = if let Some(ref id) = body.auth_config_id {
+        id.clone()
+    } else if let Some(ref app) = body.app {
+        resolve_composio_auth_config_id(api_key, app).await?
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Either 'app' or 'auth_config_id' is required" })),
+        ));
+    };
+
+    let tid = state.tenant_id.as_deref();
+    // All connections are created under the gateway's identity.
+    // The instance_id is only used for local assigned_to tracking.
+    let user_id = composio_user_id(tid, "gateway");
+    let toolkit_slug = body.app.clone().unwrap_or_else(|| "unknown".to_string());
+    let host = redirect_host.trim_end_matches('/');
+    let callback_url = if host.starts_with("http://") || host.starts_with("https://") {
+        format!("{}/composio/callback", host)
+    } else {
+        format!("http://{}/composio/callback", host)
+    };
+
+    let client = composio_client();
+    let link_body = serde_json::json!({
+        "auth_config_id": auth_config_id,
+        "user_id": user_id,
+        "redirect_url": callback_url,
+    });
+
+    let resp = client
+        .post("https://backend.composio.dev/api/v3/connected_accounts/link")
+        .header("x-api-key", api_key)
+        .json(&link_body)
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("Composio API error: {}", e) })),
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        tracing::error!(status = %status, body = %body_text, "Composio link request failed");
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(
+                serde_json::json!({ "error": format!("Composio link API returned {}: {}", status, body_text) }),
+            ),
+        ));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Invalid Composio response: {}", e) })),
+        )
+    })?;
+
+    let redirect_url = data
+        .get("redirect_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let connected_account_id = data
+        .get("connected_account_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Store pending state
+    let pending_id = uuid::Uuid::new_v4().to_string();
+    let pending_name = body.name.clone().unwrap_or_default();
+    let pending_instance_id = body.instance_id.clone();
+    if let Ok(mut pending) = state.composio_oauth_pending.lock() {
+        pending.insert(
+            pending_id.clone(),
+            crate::app_state::ComposioOAuthPendingState {
+                user_id: user_id.clone(),
+                toolkit_slug,
+                connected_account_id: connected_account_id.clone(),
+                name: pending_name,
+                instance_id: pending_instance_id,
+                created_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "redirect_url": redirect_url,
+        "connected_account_id": connected_account_id,
+        "pending_id": pending_id,
+        "user_id": user_id,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ComposioCallbackQuery {
+    connected_account_id: Option<String>,
+}
+
+pub async fn composio_oauth_callback(
+    State(state): State<AppState>,
+    Query(query): Query<ComposioCallbackQuery>,
+) -> impl IntoResponse {
+    let Some(account_id) = query.connected_account_id else {
+        return axum::response::Html(
+            "<html><body><h2>Composio Connection</h2><p>Authorization flow completed. You may close this window and refresh the dashboard.</p></body></html>".to_string()
+        );
+    };
+
+    // Look up pending state by connected_account_id to get name and instance_id
+    let pending_info: Option<(String, Option<String>)> = state
+        .composio_oauth_pending
+        .lock()
+        .ok()
+        .and_then(|pending| {
+            pending
+                .values()
+                .find(|p| p.connected_account_id.as_deref() == Some(&account_id))
+                .map(|p| (p.name.clone(), p.instance_id.clone()))
+        });
+
+    // Fetch connection details from Composio if we have an API key
+    if let Some(ref api_key) = state.composio_api_key {
+        match fetch_composio_connected_account(api_key, &account_id).await {
+            Ok(data) => {
+                let fields = parse_composio_account(&data);
+
+                // Use pending state for name and instance_id; fallback to parsed fields
+                let (conn_name, pending_instance_id) =
+                    pending_info.unwrap_or_else(|| (String::new(), None));
+                let name = if conn_name.is_empty() {
+                    fields.display_name.clone()
+                } else {
+                    conn_name
+                };
+                let instance_id = pending_instance_id.unwrap_or_default();
+
+                let connection = crate::app_state::ComposioConnection {
+                    id: account_id.clone(),
+                    name,
+                    toolkit_slug: fields.toolkit_slug,
+                    display_name: fields.display_name,
+                    user_id: fields.user_id,
+                    assigned_to: if instance_id.is_empty() {
+                        vec![]
+                    } else {
+                        vec![instance_id]
+                    },
+                    status: fields.status,
+                    connected_at: if fields.connected_at.is_empty() {
+                        chrono::Utc::now().to_rfc3339()
+                    } else {
+                        fields.connected_at
+                    },
+                };
+
+                let mut store = state.composio_store.write().await;
+                // Remove any existing connection with same ID
+                store.connections.retain(|c| c.id != account_id);
+                store.connections.push(connection);
+                drop(store);
+
+                // Persist
+                if let Err(e) = persist_composio_store(&state).await {
+                    tracing::error!(error = ?e, "failed to persist composio store after callback");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, account_id = %account_id, "failed to fetch composio account details in callback");
+            }
+        }
+    }
+
+    axum::response::Html(
+        "<html><body><h2>Composio Connected</h2><p>Authorization successful! You may close this window and refresh the dashboard.</p></body></html>".to_string()
+    )
+}
+
+pub async fn delete_composio_connection_global(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let mut store = state.composio_store.write().await;
+    let before = store.connections.len();
+    store.connections.retain(|c| c.id != connection_id);
+    if store.connections.len() == before {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Connection not found" })),
+        ));
+    }
+    drop(store);
+
+    persist_composio_store(&state).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to persist store" })),
+        )
+    })?;
+
+    // Best-effort delete from Composio API
+    if let Some(ref api_key) = state.composio_api_key {
+        let client = composio_client();
+        let _ = client
+            .delete(format!(
+                "https://backend.composio.dev/api/v3/connected_accounts/{}",
+                connection_id
+            ))
+            .header("x-api-key", api_key)
+            .send()
+            .await;
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ---- Per-instance handlers ----
+
 pub async fn get_composio(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1026,17 +1991,28 @@ pub async fn get_composio(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    // Mask api_key: only show if it exists
     let has_api_key = composio
         .and_then(|c| c.get("api_key"))
         .and_then(|v| v.as_str())
         .map(|s| !s.is_empty())
         .unwrap_or(false);
 
+    // Enrich with gateway info
+    let gateway_user_id = composio_user_id(state.tenant_id.as_deref(), "gateway");
+    let store = state.composio_store.read().await;
+    let connections: Vec<&crate::app_state::ComposioConnection> = store
+        .connections
+        .iter()
+        .filter(|c| c.assigned_to.contains(&id))
+        .collect();
+
     Ok(Json(serde_json::json!({
         "enabled": enabled,
         "entity_id": entity_id,
         "has_api_key": has_api_key,
+        "has_gateway_api_key": state.composio_api_key.is_some(),
+        "user_id": gateway_user_id,
+        "connections": connections,
     })))
 }
 
@@ -1045,6 +2021,7 @@ pub struct UpdateComposioBody {
     enabled: Option<bool>,
     api_key: Option<String>,
     entity_id: Option<String>,
+    sync_gateway: Option<bool>,
 }
 
 pub async fn update_composio(
@@ -1068,11 +2045,378 @@ pub async fn update_composio(
             if let Some(entity_id) = body.entity_id {
                 ct.insert("entity_id".to_string(), toml::Value::String(entity_id));
             }
+
+            // sync_gateway: write gateway API key, gateway entity_id, and connected_accounts
+            if body.sync_gateway.unwrap_or(false) {
+                if let Some(ref gw_api_key) = state.composio_api_key {
+                    ct.insert(
+                        "api_key".to_string(),
+                        toml::Value::String(gw_api_key.clone()),
+                    );
+                    ct.insert(
+                        "entity_id".to_string(),
+                        toml::Value::String(composio_user_id(
+                            state.tenant_id.as_deref(),
+                            "gateway",
+                        )),
+                    );
+                    ct.insert("enabled".to_string(), toml::Value::Boolean(true));
+
+                    // Write connected_accounts: toolkit_slug → connected_account_id
+                    let store = state.composio_store.read().await;
+                    let mut accts = toml::map::Map::new();
+                    for conn in store
+                        .connections
+                        .iter()
+                        .filter(|c| c.assigned_to.contains(&id))
+                    {
+                        accts
+                            .entry(conn.toolkit_slug.clone())
+                            .or_insert_with(|| toml::Value::String(conn.id.clone()));
+                    }
+                    ct.insert(
+                        "connected_accounts".to_string(),
+                        toml::Value::Table(accts),
+                    );
+                }
+            }
         }
     }
 
     write_agent_config(&state, &id, &config).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn list_instance_composio_connections(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let store = state.composio_store.read().await;
+    let connections: Vec<&crate::app_state::ComposioConnection> = store
+        .connections
+        .iter()
+        .filter(|c| c.assigned_to.contains(&id))
+        .collect();
+    Json(serde_json::json!({ "connections": connections }))
+}
+
+#[derive(Deserialize)]
+pub struct ComposioInstanceConnectBody {
+    app: Option<String>,
+    auth_config_id: Option<String>,
+    name: Option<String>,
+}
+
+pub async fn composio_instance_connect(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ComposioInstanceConnectBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    validate_agent_id(&id)?;
+    composio_connect_init(
+        State(state),
+        Json(ComposioConnectInitBody {
+            instance_id: Some(id),
+            name: body.name,
+            app: body.app,
+            auth_config_id: body.auth_config_id,
+        }),
+    )
+    .await
+}
+
+pub async fn unassign_composio_connection(
+    State(state): State<AppState>,
+    Path((id, connection_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let mut store = state.composio_store.write().await;
+    let conn = store.connections.iter_mut().find(|c| c.id == connection_id);
+    if let Some(conn) = conn {
+        conn.assigned_to.retain(|a| a != &id);
+    } else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Connection not found" })),
+        ));
+    }
+    drop(store);
+
+    persist_composio_store(&state).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to persist store" })),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct AssignComposioConnectionBody {
+    connection_id: String,
+}
+
+pub async fn assign_composio_connection(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AssignComposioConnectionBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    validate_agent_id(&id)?;
+
+    let mut store = state.composio_store.write().await;
+    let conn = store
+        .connections
+        .iter_mut()
+        .find(|c| c.id == body.connection_id);
+    if let Some(conn) = conn {
+        if !conn.assigned_to.contains(&id) {
+            conn.assigned_to.push(id);
+        }
+    } else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Connection not found" })),
+        ));
+    }
+    drop(store);
+
+    persist_composio_store(&state).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to persist store" })),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn composio_mcp_sync(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    validate_agent_id(&id)?;
+
+    let api_key = state.composio_api_key.as_ref().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "COMPOSIO_API_KEY not configured" })),
+        )
+    })?;
+
+    // Use gateway identity for Composio API calls (MCP URL user_id)
+    let user_id = composio_user_id(state.tenant_id.as_deref(), "gateway");
+
+    // Get connected toolkits assigned to this instance
+    let store = state.composio_store.read().await;
+    let instance_connections: Vec<crate::app_state::ComposioConnection> = store
+        .connections
+        .iter()
+        .filter(|c| c.assigned_to.contains(&id))
+        .cloned()
+        .collect();
+    let existing_mcp = store.mcp_servers.clone();
+    drop(store);
+
+    if instance_connections.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "No Composio connections found for this instance" })),
+        ));
+    }
+
+    // Collect unique toolkit slugs
+    let mut toolkit_slugs: Vec<String> = instance_connections
+        .iter()
+        .map(|c| c.toolkit_slug.clone())
+        .collect();
+    toolkit_slugs.sort();
+    toolkit_slugs.dedup();
+
+    let client = composio_client();
+    let mut mcp_urls: Vec<(String, String)> = Vec::new(); // (slug, url)
+    let mut new_mcp_entries: std::collections::HashMap<
+        String,
+        crate::app_state::ComposioMcpServerEntry,
+    > = existing_mcp;
+
+    // Pre-fetch existing MCP servers from Composio so we can reuse them
+    let existing_remote_servers: Vec<serde_json::Value> = match client
+        .get("https://backend.composio.dev/api/v3/mcp/servers")
+        .header("x-api-key", api_key)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            let data: serde_json::Value = r.json().await.unwrap_or_default();
+            data.get("items")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+
+    for slug in &toolkit_slugs {
+        let server_id = if let Some(entry) = new_mcp_entries.get(slug) {
+            entry.server_id.clone()
+        } else {
+            let server_name = composio_mcp_server_name(state.tenant_id.as_deref(), slug);
+
+            // Check if a server with this name already exists remotely
+            let existing_sid = existing_remote_servers.iter().find_map(|s| {
+                let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if name == server_name {
+                    s.get("id").and_then(|v| v.as_str()).map(String::from)
+                } else {
+                    None
+                }
+            });
+
+            let sid = if let Some(sid) = existing_sid {
+                tracing::info!(slug = %slug, server_id = %sid, "Reusing existing Composio MCP server");
+                sid
+            } else {
+                // Resolve toolkit slug to auth_config_id first
+                let auth_config_id =
+                    match resolve_composio_auth_config_id(api_key, slug).await {
+                        Ok(id) => id,
+                        Err(_) => {
+                            tracing::warn!(
+                                slug = %slug,
+                                "Could not resolve auth_config_id for toolkit"
+                            );
+                            continue;
+                        }
+                    };
+
+                // Create MCP server via Composio API (POST /api/v3/mcp/servers)
+                let create_body = serde_json::json!({
+                    "name": server_name,
+                    "auth_config_ids": [auth_config_id],
+                });
+                let resp = client
+                    .post("https://backend.composio.dev/api/v3/mcp/servers")
+                    .header("x-api-key", api_key)
+                    .json(&create_body)
+                    .send()
+                    .await;
+
+                match resp {
+                    Ok(r) if r.status().is_success() => {
+                        let data: serde_json::Value = r.json().await.unwrap_or_default();
+                        data.get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    }
+                    Ok(r) => {
+                        let status = r.status();
+                        let body = r.text().await.unwrap_or_default();
+                        tracing::warn!(slug = %slug, status = %status, body = %body, "Composio MCP create failed");
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(slug = %slug, error = %e, "Composio MCP create request failed");
+                        continue;
+                    }
+                }
+            };
+
+            if sid.is_empty() {
+                tracing::warn!(slug = %slug, "Composio MCP returned no server ID");
+                continue;
+            }
+
+            new_mcp_entries.insert(
+                slug.clone(),
+                crate::app_state::ComposioMcpServerEntry {
+                    server_id: sid.clone(),
+                    toolkit_slug: slug.clone(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+            sid
+        };
+
+        // Composio MCP uses Streamable HTTP transport at /mcp endpoint
+        let url = format!(
+            "https://backend.composio.dev/v3/mcp/{}/mcp?user_id={}",
+            server_id, user_id
+        );
+        mcp_urls.push((slug.clone(), url));
+    }
+
+    // Update store with new MCP entries
+    {
+        let mut store = state.composio_store.write().await;
+        store.mcp_servers = new_mcp_entries;
+    }
+    let _ = persist_composio_store(&state).await;
+
+    // Write MCP server entries to instance config
+    let mut config = read_agent_config(&state, &id).await.map_err(|s| {
+        (
+            s,
+            Json(serde_json::json!({ "error": "Failed to read instance config" })),
+        )
+    })?;
+
+    if let toml::Value::Table(ref mut t) = config {
+        // Read existing mcp_servers array
+        let mut servers: Vec<toml::Value> = t
+            .get("mcp_servers")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // Remove stale composio-* entries
+        servers.retain(|s| {
+            let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            !name.starts_with("composio-")
+        });
+
+        // Add new composio MCP entries (Streamable HTTP transport)
+        for (slug, url) in &mcp_urls {
+            let mut entry = toml::map::Map::new();
+            entry.insert(
+                "name".to_string(),
+                toml::Value::String(format!("composio-{}", slug)),
+            );
+            entry.insert(
+                "transport".to_string(),
+                toml::Value::String("streamable-http".to_string()),
+            );
+            entry.insert("url".to_string(), toml::Value::String(url.clone()));
+            entry.insert("enabled".to_string(), toml::Value::Boolean(true));
+            // Composio MCP servers require API key authentication
+            let mut headers = toml::map::Map::new();
+            headers.insert(
+                "x-api-key".to_string(),
+                toml::Value::String(api_key.clone()),
+            );
+            entry.insert("headers".to_string(), toml::Value::Table(headers));
+            servers.push(toml::Value::Table(entry));
+        }
+
+        let mcp_toml = toml::Value::Array(servers);
+        t.insert("mcp_servers".to_string(), mcp_toml);
+    }
+
+    write_agent_config(&state, &id, &config)
+        .await
+        .map_err(|s| {
+            (
+                s,
+                Json(serde_json::json!({ "error": "Failed to write instance config" })),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "synced_toolkits": toolkit_slugs,
+        "mcp_urls": mcp_urls.iter().map(|(s, u)| serde_json::json!({ "toolkit": s, "url": u })).collect::<Vec<_>>(),
+        "note": "MCP server URLs have been written to the instance config. The agent will discover and load these tools on next startup.",
+    })))
 }
 
 // ---------- Integrations: Google (GOGCLI) ----------
@@ -1102,13 +2446,12 @@ async fn persist_google_accounts(state: &AppState) -> Result<(), StatusCode> {
         .agents_dir
         .join(".google")
         .join("accounts.json");
-    let json = serde_json::to_string_pretty(&*store).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tokio::fs::write(&accounts_path, json)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to persist google accounts store");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let json =
+        serde_json::to_string_pretty(&*store).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(&accounts_path, json).await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to persist google accounts store");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 /// Copy the gateway's GOG keyring files to an agent's data directory.
@@ -1150,10 +2493,12 @@ async fn copy_keyring_to_agent(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         while let Ok(Some(entry)) = entries.next_entry().await {
             let dest_file = dst.join("keyring").join(entry.file_name());
-            tokio::fs::copy(entry.path(), dest_file).await.map_err(|e| {
-                tracing::error!(error = %e, "Failed to copy keyring file to agent");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            tokio::fs::copy(entry.path(), dest_file)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "Failed to copy keyring file to agent");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
         }
     }
 
@@ -1262,9 +2607,7 @@ fn remove_google_account_from_config(config: &mut toml::Value, email: &str) {
 // ── Gateway-level Google endpoints ──
 
 /// List all gateway-authenticated Google accounts.
-pub async fn list_google_accounts(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn list_google_accounts(State(state): State<AppState>) -> impl IntoResponse {
     let store = state.google_accounts.read().await;
     Json(serde_json::json!({ "accounts": store.accounts }))
 }
@@ -1290,11 +2633,21 @@ pub async fn google_auth_init(
 
     // Run `gog auth add <email> --services user --remote --step 1 --redirect-uri <uri>` locally
     let redirect_uri_arg = format!("http://{redirect_host}/oauth2/callback");
-    let output = run_gog_command(&state.gog_home, &[
-        "auth", "add", &body.email,
-        "--services", "user", "--remote", "--step", "1",
-        "--redirect-uri", &redirect_uri_arg,
-    ])
+    let output = run_gog_command(
+        &state.gog_home,
+        &[
+            "auth",
+            "add",
+            &body.email,
+            "--services",
+            "user",
+            "--remote",
+            "--step",
+            "1",
+            "--redirect-uri",
+            &redirect_uri_arg,
+        ],
+    )
     .await
     .map_err(|e| {
         tracing::error!(error = %e, "Failed to run gog auth init");
@@ -1306,15 +2659,14 @@ pub async fn google_auth_init(
     let combined = format!("{stdout}\n{stderr}");
 
     // Parse the auth URL from gog output
-    let auth_url = combined
-        .lines()
-        .find_map(|line| {
-            if line.starts_with("http") {
-                Some(line.trim().to_string())
-            } else {
-                line.strip_prefix("auth_url\t").map(|url| url.trim().to_string())
-            }
-        });
+    let auth_url = combined.lines().find_map(|line| {
+        if line.starts_with("http") {
+            Some(line.trim().to_string())
+        } else {
+            line.strip_prefix("auth_url\t")
+                .map(|url| url.trim().to_string())
+        }
+    });
 
     match auth_url {
         Some(url) => {
@@ -1435,12 +2787,21 @@ h2{{color:#dc2626;margin:0 0 .5rem}}p{{color:#666;margin:0}}</style></head>
     let full_callback_url = format!("{}?{raw_query}", pending.redirect_uri);
 
     // Run step 2 locally on the gateway
-    let output = match run_gog_command(&app_state.gog_home, &[
-        "auth", "add", email,
-        "--remote", "--step", "2",
-        "--auth-url", &full_callback_url,
-        "--redirect-uri", &pending.redirect_uri,
-    ])
+    let output = match run_gog_command(
+        &app_state.gog_home,
+        &[
+            "auth",
+            "add",
+            email,
+            "--remote",
+            "--step",
+            "2",
+            "--auth-url",
+            &full_callback_url,
+            "--redirect-uri",
+            &pending.redirect_uri,
+        ],
+    )
     .await
     {
         Ok(o) => o,
@@ -1460,7 +2821,8 @@ h2{{color:#dc2626;margin:0 0 .5rem}}p{{color:#666;margin:0}}</style></head>
                 store.accounts.push(crate::app_state::GoogleAccount {
                     email: email.clone(),
                     assigned_to: vec![],
-                    authenticated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    authenticated_at: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 });
             }
         }
@@ -1531,12 +2893,21 @@ pub async fn google_auth_complete(
     }
 
     // Run step 2 locally on the gateway
-    let output = run_gog_command(&app_state.gog_home, &[
-        "auth", "add", &body.email,
-        "--remote", "--step", "2",
-        "--auth-url", &full_callback_url,
-        "--redirect-uri", &redirect_uri,
-    ])
+    let output = run_gog_command(
+        &app_state.gog_home,
+        &[
+            "auth",
+            "add",
+            &body.email,
+            "--remote",
+            "--step",
+            "2",
+            "--auth-url",
+            &full_callback_url,
+            "--redirect-uri",
+            &redirect_uri,
+        ],
+    )
     .await
     .map_err(|e| {
         tracing::error!(error = %e, "Failed to run gog auth step 2");
@@ -1551,7 +2922,8 @@ pub async fn google_auth_complete(
                 store.accounts.push(crate::app_state::GoogleAccount {
                     email: body.email.clone(),
                     assigned_to: vec![],
-                    authenticated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    authenticated_at: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 });
             }
         }
@@ -1693,12 +3065,7 @@ pub async fn update_google(
         }
 
         // Copy keyring to agent
-        copy_keyring_to_agent(
-            &state.docker_config.agents_dir,
-            &id,
-            &state.gog_home,
-        )
-        .await?;
+        copy_keyring_to_agent(&state.docker_config.agents_dir, &id, &state.gog_home).await?;
 
         // Write GOG config.json with default_account
         let gogcli_dir = state
@@ -1729,9 +3096,7 @@ pub async fn update_google(
         {
             let mut store = state.google_accounts.write().await;
             for account in &mut store.accounts {
-                if assign_accounts.contains(&account.email)
-                    && !account.assigned_to.contains(&id)
-                {
+                if assign_accounts.contains(&account.email) && !account.assigned_to.contains(&id) {
                     account.assigned_to.push(id.clone());
                 }
             }
@@ -1836,7 +3201,9 @@ pub async fn signal_link_start(
             if active >= MAX_PENDING_SIGNAL_LINKS {
                 return (
                     StatusCode::TOO_MANY_REQUESTS,
-                    Json(serde_json::json!({ "error": "Too many pending link sessions. Complete or wait for existing ones to expire." })),
+                    Json(
+                        serde_json::json!({ "error": "Too many pending link sessions. Complete or wait for existing ones to expire." }),
+                    ),
                 );
             }
         }
@@ -1911,29 +3278,27 @@ pub async fn signal_link_start(
             };
             let _ = child.kill().await;
             // Restart daemon since we stopped it.
-            crate::signal_cli::start_daemon(
-                &state.signal_cli_config,
-                &state.signal_cli_handle,
-            )
-            .await;
+            crate::signal_cli::start_daemon(&state.signal_cli_config, &state.signal_cli_handle)
+                .await;
             // Log full details internally; return sanitized message to client.
             tracing::error!(stderr = %stderr_msg.trim(), "signal-cli link failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "signal-cli link did not produce a URI. Check gateway logs for details." })),
+                Json(
+                    serde_json::json!({ "error": "signal-cli link did not produce a URI. Check gateway logs for details." }),
+                ),
             );
         }
         Ok(Err(e)) => {
             let _ = child.kill().await;
-            crate::signal_cli::start_daemon(
-                &state.signal_cli_config,
-                &state.signal_cli_handle,
-            )
-            .await;
+            crate::signal_cli::start_daemon(&state.signal_cli_config, &state.signal_cli_handle)
+                .await;
             tracing::error!(error = %e, "Failed to read signal-cli link output");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to read signal-cli output. Check gateway logs for details." })),
+                Json(
+                    serde_json::json!({ "error": "Failed to read signal-cli output. Check gateway logs for details." }),
+                ),
             );
         }
         Ok(Ok(_)) => {}
@@ -1942,16 +3307,14 @@ pub async fn signal_link_start(
     let device_link_uri = uri_line.trim().to_string();
     if !device_link_uri.starts_with("tsdevice:") && !device_link_uri.starts_with("sgnl:") {
         let _ = child.kill().await;
-        crate::signal_cli::start_daemon(
-            &state.signal_cli_config,
-            &state.signal_cli_handle,
-        )
-        .await;
+        crate::signal_cli::start_daemon(&state.signal_cli_config, &state.signal_cli_handle).await;
         // Log the raw output internally; don't expose to client.
         tracing::error!(output = %device_link_uri, "Unexpected signal-cli output");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "signal-cli produced unexpected output. Check gateway logs." })),
+            Json(
+                serde_json::json!({ "error": "signal-cli produced unexpected output. Check gateway logs." }),
+            ),
         );
     }
 
@@ -2025,7 +3388,9 @@ pub async fn signal_link_finish(
                 None => {
                     return (
                         StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({ "error": "Link session not found or expired. Please start a new link." })),
+                        Json(
+                            serde_json::json!({ "error": "Link session not found or expired. Please start a new link." }),
+                        ),
                     );
                 }
             },
@@ -2066,7 +3431,9 @@ pub async fn signal_link_finish(
     if !success {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Signal linking failed. Make sure you scanned the QR code with your Signal app before completing." })),
+            Json(
+                serde_json::json!({ "error": "Signal linking failed. Make sure you scanned the QR code with your Signal app before completing." }),
+            ),
         );
     }
 
@@ -2080,15 +3447,12 @@ pub async fn signal_link_finish(
     // Save the connection.
     {
         let mut store = state.signal_connections.write().await;
-        store
-            .connections
-            .push(crate::app_state::SignalConnection {
-                name: body.name.clone(),
-                account,
-                linked_at: chrono::Utc::now()
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                assigned_to: vec![],
-            });
+        store.connections.push(crate::app_state::SignalConnection {
+            name: body.name.clone(),
+            account,
+            linked_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            assigned_to: vec![],
+        });
     }
     if let Err(e) = persist_signal_connections(&state).await {
         tracing::error!(error = ?e, "Failed to persist signal connections");
@@ -2139,7 +3503,10 @@ pub async fn delete_signal_connection(
         store.connections.retain(|c| c.name != name);
     }
     if let Err(sc) = persist_signal_connections(&state).await {
-        return (sc, Json(serde_json::json!({ "error": "Failed to persist connections" })));
+        return (
+            sc,
+            Json(serde_json::json!({ "error": "Failed to persist connections" })),
+        );
     }
 
     // If no connections remain, stop the daemon.
@@ -2167,9 +3534,7 @@ pub async fn get_signal(
         Ok(c) => c,
         Err(sc) => return (sc, Json(serde_json::json!({ "error": "Agent not found" }))),
     };
-    let signal = config
-        .get("channels_config")
-        .and_then(|c| c.get("signal"));
+    let signal = config.get("channels_config").and_then(|c| c.get("signal"));
 
     let enabled = signal.is_some();
     let account = signal
@@ -2196,13 +3561,16 @@ pub async fn get_signal(
         store.connections.clone()
     };
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "enabled": enabled,
-        "account": account,
-        "http_url": http_url,
-        "connection_name": connection_name,
-        "gateway_connections": gateway_connections,
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "enabled": enabled,
+            "account": account,
+            "http_url": http_url,
+            "connection_name": connection_name,
+            "gateway_connections": gateway_connections,
+        })),
+    )
 }
 
 /// Request body for assigning a Signal connection to an agent.
@@ -2248,9 +3616,19 @@ pub async fn assign_signal(
     // Look up the connection.
     let connection = {
         let store = state.signal_connections.read().await;
-        match store.connections.iter().find(|c| c.name == body.connection).cloned() {
+        match store
+            .connections
+            .iter()
+            .find(|c| c.name == body.connection)
+            .cloned()
+        {
             Some(c) => c,
-            None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Signal connection not found" }))),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "Signal connection not found" })),
+                )
+            }
         }
     };
 
@@ -2274,20 +3652,30 @@ pub async fn assign_signal(
         ignore_stories,
     );
     if let Err(sc) = write_agent_config(&state, &id, &config).await {
-        return (sc, Json(serde_json::json!({ "error": "Failed to write agent config" })));
+        return (
+            sc,
+            Json(serde_json::json!({ "error": "Failed to write agent config" })),
+        );
     }
 
     // Update assigned_to in the gateway store.
     {
         let mut store = state.signal_connections.write().await;
-        if let Some(conn) = store.connections.iter_mut().find(|c| c.name == body.connection) {
+        if let Some(conn) = store
+            .connections
+            .iter_mut()
+            .find(|c| c.name == body.connection)
+        {
             if !conn.assigned_to.contains(&id) {
                 conn.assigned_to.push(id.clone());
             }
         }
     }
     if let Err(sc) = persist_signal_connections(&state).await {
-        return (sc, Json(serde_json::json!({ "error": "Failed to persist connections" })));
+        return (
+            sc,
+            Json(serde_json::json!({ "error": "Failed to persist connections" })),
+        );
     }
 
     (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
@@ -2307,7 +3695,10 @@ pub async fn unassign_signal(
     };
     remove_signal_from_config(&mut config);
     if let Err(sc) = write_agent_config(&state, &id, &config).await {
-        return (sc, Json(serde_json::json!({ "error": "Failed to write agent config" })));
+        return (
+            sc,
+            Json(serde_json::json!({ "error": "Failed to write agent config" })),
+        );
     }
 
     // Update assigned_to in the gateway store.
@@ -2318,7 +3709,10 @@ pub async fn unassign_signal(
         }
     }
     if let Err(sc) = persist_signal_connections(&state).await {
-        return (sc, Json(serde_json::json!({ "error": "Failed to persist connections" })));
+        return (
+            sc,
+            Json(serde_json::json!({ "error": "Failed to persist connections" })),
+        );
     }
 
     (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
@@ -2342,8 +3736,7 @@ fn ensure_signal_in_config(
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
         if let toml::Value::Table(ref mut ct) = channels {
             // Ensure the required `cli` field exists (defaults to false for Docker agents).
-            ct.entry("cli")
-                .or_insert(toml::Value::Boolean(false));
+            ct.entry("cli").or_insert(toml::Value::Boolean(false));
             let mut signal_table = toml::map::Map::new();
             signal_table.insert(
                 "http_url".to_string(),
@@ -2354,10 +3747,7 @@ fn ensure_signal_in_config(
                 toml::Value::String(account.to_string()),
             );
             if let Some(gid) = group_id {
-                signal_table.insert(
-                    "group_id".to_string(),
-                    toml::Value::String(gid.to_string()),
-                );
+                signal_table.insert("group_id".to_string(), toml::Value::String(gid.to_string()));
             }
             signal_table.insert(
                 "allowed_from".to_string(),
@@ -2439,11 +3829,7 @@ pub async fn update_skill(
     Path((id, name)): Path<(String, String)>,
     Json(body): Json<UpdateSkillBody>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !name.ends_with(".md")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains("..")
-    {
+    if !name.ends_with(".md") || name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(StatusCode::BAD_REQUEST);
     }
     let skills_dir = agent_skills_dir(&state, &id);
@@ -2461,11 +3847,7 @@ pub async fn delete_skill(
     State(state): State<AppState>,
     Path((id, name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !name.ends_with(".md")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains("..")
-    {
+    if !name.ends_with(".md") || name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(StatusCode::BAD_REQUEST);
     }
     let path = agent_skills_dir(&state, &id).join(&name);
@@ -2720,10 +4102,7 @@ pub async fn update_cron_job(
                         conn.execute(&sql, rusqlite::params![s, job_id])?;
                     }
                     serde_json::Value::Number(n) => {
-                        conn.execute(
-                            &sql,
-                            rusqlite::params![n.as_i64().unwrap_or(0), job_id],
-                        )?;
+                        conn.execute(&sql, rusqlite::params![n.as_i64().unwrap_or(0), job_id])?;
                     }
                     _ => {}
                 }
@@ -2749,8 +4128,14 @@ pub async fn delete_cron_job(
 
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = rusqlite::Connection::open(&db_path)?;
-        conn.execute("DELETE FROM cron_runs WHERE job_id = ?1", rusqlite::params![job_id])?;
-        conn.execute("DELETE FROM cron_jobs WHERE id = ?1", rusqlite::params![job_id])?;
+        conn.execute(
+            "DELETE FROM cron_runs WHERE job_id = ?1",
+            rusqlite::params![job_id],
+        )?;
+        conn.execute(
+            "DELETE FROM cron_jobs WHERE id = ?1",
+            rusqlite::params![job_id],
+        )?;
         Ok(())
     })
     .await
@@ -2842,4 +4227,70 @@ pub async fn chat(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composio_prefix_without_tenant() {
+        assert_eq!(composio_prefix(None), "zcgw-");
+    }
+
+    #[test]
+    fn composio_prefix_with_tenant() {
+        assert_eq!(composio_prefix(Some("acme")), "zcgw-acme-");
+    }
+
+    #[test]
+    fn composio_user_id_without_tenant() {
+        assert_eq!(composio_user_id(None, "bot-1"), "zcgw-bot-1");
+    }
+
+    #[test]
+    fn composio_user_id_with_tenant() {
+        assert_eq!(composio_user_id(Some("acme"), "bot-1"), "zcgw-acme-bot-1");
+    }
+
+    #[test]
+    fn composio_user_id_gateway_fallback() {
+        assert_eq!(composio_user_id(None, "gateway"), "zcgw-gateway");
+        assert_eq!(
+            composio_user_id(Some("acme"), "gateway"),
+            "zcgw-acme-gateway"
+        );
+    }
+
+    #[test]
+    fn composio_mcp_server_name_without_tenant() {
+        assert_eq!(composio_mcp_server_name(None, "gmail"), "zcgw-gmail");
+    }
+
+    #[test]
+    fn composio_mcp_server_name_with_tenant() {
+        assert_eq!(
+            composio_mcp_server_name(Some("acme"), "gmail"),
+            "zcgw-acme-gmail"
+        );
+    }
+
+    #[test]
+    fn composio_user_id_roundtrip_without_tenant() {
+        let instance_id = "my-bot";
+        let user_id = composio_user_id(None, instance_id);
+        let prefix = composio_prefix(None);
+        let recovered = user_id.strip_prefix(&prefix).unwrap();
+        assert_eq!(recovered, instance_id);
+    }
+
+    #[test]
+    fn composio_user_id_roundtrip_with_tenant() {
+        let instance_id = "my-bot";
+        let tenant = Some("acme");
+        let user_id = composio_user_id(tenant, instance_id);
+        let prefix = composio_prefix(tenant);
+        let recovered = user_id.strip_prefix(&prefix).unwrap();
+        assert_eq!(recovered, instance_id);
+    }
 }

@@ -212,7 +212,8 @@ Notes:
 |---|---|---|
 | `enabled` | `false` | Enable Composio managed OAuth tools |
 | `api_key` | unset | Composio API key used by the `composio` tool |
-| `entity_id` | `default` | Default `user_id` sent on connect/execute calls |
+| `entity_id` | `default` | Default `user_id` sent on connect/execute calls. When managed by the gateway, this is set to the gateway's identity (e.g. `zcgw-gateway`). |
+| `connected_accounts` | `{}` | Gateway-managed toolkit → `connected_account_id` mappings. Written by the gateway's "Sync from Gateway" action. The agent uses these directly instead of querying Composio by `user_id`. |
 
 Notes:
 
@@ -221,6 +222,7 @@ Notes:
 - ZeroClaw requests Composio v3 tools with `toolkit_versions=latest` and executes tools with `version="latest"` to avoid stale default tool revisions.
 - Typical flow: call `connect`, complete browser OAuth, then run `execute` for the desired tool action.
 - If Composio returns a missing connected-account reference error, call `list_accounts` (optionally with `app`) and pass the returned `connected_account_id` to `execute`.
+- **Gateway-managed connections**: All connections are created under the gateway's identity. The gateway writes `connected_accounts` mappings so agents can resolve connections without relying on `user_id` lookups. Use "Sync from Gateway" in the UI after assigning connections.
 
 ## `[cost]`
 

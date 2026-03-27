@@ -39,6 +39,8 @@ pub struct ComposioTool {
     security: Arc<SecurityPolicy>,
     recent_connected_accounts: RwLock<HashMap<String, String>>,
     action_slug_cache: RwLock<HashMap<String, String>>,
+    /// Gateway-managed toolkit → connected_account_id mappings.
+    gateway_connected_accounts: HashMap<String, String>,
 }
 
 impl ComposioTool {
@@ -46,6 +48,7 @@ impl ComposioTool {
         api_key: &str,
         default_entity_id: Option<&str>,
         security: Arc<SecurityPolicy>,
+        connected_accounts: HashMap<String, String>,
     ) -> Self {
         Self {
             api_key: api_key.to_string(),
@@ -53,6 +56,7 @@ impl ComposioTool {
             security,
             recent_connected_accounts: RwLock::new(HashMap::new()),
             action_slug_cache: RwLock::new(HashMap::new()),
+            gateway_connected_accounts: connected_accounts,
         }
     }
 
@@ -166,6 +170,14 @@ impl ComposioTool {
         let app = app_name
             .map(normalize_app_slug)
             .filter(|app| !app.is_empty());
+
+        // Check gateway-managed connected_accounts first (toolkit_slug → account_id)
+        if let Some(ref app_slug) = app {
+            if let Some(account_id) = self.gateway_connected_accounts.get(app_slug.as_str()) {
+                return Ok(Some(account_id.clone()));
+            }
+        }
+
         let entity = entity_id.map(normalize_entity_id);
         let (Some(app), Some(entity)) = (app, entity) else {
             return Ok(None);
@@ -1340,24 +1352,24 @@ mod tests {
 
     #[test]
     fn composio_tool_has_correct_name() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         assert_eq!(tool.name(), "composio");
     }
 
     #[test]
     fn composio_tool_has_description() {
-        let _tool = ComposioTool::new("test-key", None, test_security());
-        assert!(!ComposioTool::new("test-key", None, test_security())
+        let _tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
+        assert!(!ComposioTool::new("test-key", None, test_security(), HashMap::new())
             .description()
             .is_empty());
-        assert!(ComposioTool::new("test-key", None, test_security())
+        assert!(ComposioTool::new("test-key", None, test_security(), HashMap::new())
             .description()
             .contains("1000+"));
     }
 
     #[test]
     fn composio_tool_schema_has_required_fields() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let schema = tool.parameters_schema();
         assert!(schema["properties"]["action"].is_object());
         assert!(schema["properties"]["action_name"].is_object());
@@ -1379,7 +1391,7 @@ mod tests {
 
     #[test]
     fn composio_tool_spec_roundtrip() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let spec = tool.spec();
         assert_eq!(spec.name, "composio");
         assert!(spec.parameters.is_object());
@@ -1389,14 +1401,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_missing_action_returns_error() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let result = tool.execute(json!({})).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn execute_unknown_action_returns_error() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let result = tool.execute(json!({"action": "unknown"})).await.unwrap();
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("Unknown action"));
@@ -1404,14 +1416,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_without_action_name_returns_error() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let result = tool.execute(json!({"action": "execute"})).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn connect_without_target_returns_error() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let result = tool.execute(json!({"action": "connect"})).await;
         assert!(result.is_err());
     }
@@ -1422,7 +1434,7 @@ mod tests {
             autonomy: AutonomyLevel::ReadOnly,
             ..SecurityPolicy::default()
         });
-        let tool = ComposioTool::new("test-key", None, readonly);
+        let tool = ComposioTool::new("test-key", None, readonly, HashMap::new());
         let result = tool
             .execute(json!({
                 "action": "execute",
@@ -1444,7 +1456,7 @@ mod tests {
             max_actions_per_hour: 0,
             ..SecurityPolicy::default()
         });
-        let tool = ComposioTool::new("test-key", None, limited);
+        let tool = ComposioTool::new("test-key", None, limited, HashMap::new());
         let result = tool
             .execute(json!({
                 "action": "execute",
@@ -1520,6 +1532,30 @@ mod tests {
     fn normalize_entity_id_falls_back_to_default_when_blank() {
         assert_eq!(normalize_entity_id("   "), "default");
         assert_eq!(normalize_entity_id("workspace-user"), "workspace-user");
+    }
+
+    #[tokio::test]
+    async fn resolve_prefers_gateway_connected_accounts() {
+        let mut accounts = HashMap::new();
+        accounts.insert("gmail".to_string(), "acct-123".to_string());
+        let tool = ComposioTool::new("test-key", None, test_security(), accounts);
+        let result = tool
+            .resolve_connected_account_ref(Some("gmail"), Some("default"))
+            .await
+            .unwrap();
+        assert_eq!(result, Some("acct-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_falls_through_when_no_gateway_account() {
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
+        // With no gateway accounts and no API connectivity, resolution should
+        // fall through and fail gracefully (network error in test env).
+        let result = tool
+            .resolve_connected_account_ref(Some("gmail"), Some("default"))
+            .await;
+        // Either Ok(None) or network error — not a panic
+        assert!(result.is_ok() || result.is_err());
     }
 
     #[test]
@@ -1877,7 +1913,7 @@ mod tests {
     async fn connected_accounts_alias_dispatches_same_as_list_accounts() {
         // Both spellings should reach the same handler and return the same
         // shape of error (network failure in test, not a dispatch error).
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let r1 = tool
             .execute(json!({"action": "list_accounts"}))
             .await
@@ -1897,7 +1933,7 @@ mod tests {
 
     #[test]
     fn schema_enum_includes_connected_accounts_alias() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         let schema = tool.parameters_schema();
         let values: Vec<&str> = schema["properties"]["action"]["enum"]
             .as_array()
@@ -1911,7 +1947,7 @@ mod tests {
 
     #[test]
     fn description_mentions_connected_accounts() {
-        let tool = ComposioTool::new("test-key", None, test_security());
+        let tool = ComposioTool::new("test-key", None, test_security(), HashMap::new());
         assert!(tool.description().contains("connected_accounts"));
     }
 

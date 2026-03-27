@@ -236,6 +236,10 @@ pub struct Config {
     /// Text-to-Speech configuration (`[tts]`).
     #[serde(default)]
     pub tts: TtsConfig,
+
+    /// External MCP server configurations (`[[mcp_servers]]`).
+    #[serde(default)]
+    pub mcp_servers: Vec<crate::tools::mcp_client::McpServerConfig>,
 }
 
 /// Named provider profile definition compatible with Codex app-server style config.
@@ -1071,8 +1075,13 @@ pub struct ComposioConfig {
     #[serde(default)]
     pub api_key: Option<String>,
     /// Default entity ID for multi-user setups
-    #[serde(default = "default_entity_id")]
+    #[serde(default = "default_entity_id", alias = "user_id")]
     pub entity_id: String,
+    /// Gateway-managed toolkit → connected_account_id mappings.
+    /// When present, the agent uses these directly instead of querying by user_id.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub connected_accounts: std::collections::HashMap<String, String>,
 }
 
 fn default_entity_id() -> String {
@@ -1085,6 +1094,7 @@ impl Default for ComposioConfig {
             enabled: false,
             api_key: None,
             entity_id: default_entity_id(),
+            connected_accounts: std::collections::HashMap::new(),
         }
     }
 }
@@ -3919,6 +3929,7 @@ impl Default for Config {
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -5883,6 +5894,7 @@ default_temperature = 0.7
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
+            mcp_servers: Vec::new(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -6080,6 +6092,7 @@ tool_dispatcher = "xml"
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
+            mcp_servers: Vec::new(),
         };
 
         config.save().await.unwrap();
@@ -6808,6 +6821,7 @@ default_temperature = 0.7
             enabled: true,
             api_key: Some("comp-key-123".into()),
             entity_id: "user42".into(),
+            connected_accounts: std::collections::HashMap::new(),
         };
         let toml_str = toml::to_string(&c).unwrap();
         let parsed: ComposioConfig = toml::from_str(&toml_str).unwrap();

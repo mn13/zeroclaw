@@ -39,6 +39,7 @@ pub mod hardware_memory_map;
 #[cfg(feature = "hardware")]
 pub mod hardware_memory_read;
 pub mod http_request;
+pub mod mcp_client;
 pub mod image_info;
 pub mod memory_forget;
 pub mod memory_recall;
@@ -312,6 +313,7 @@ pub fn all_tools_with_runtime(
                 key,
                 composio_entity_id,
                 security.clone(),
+                config.composio.connected_accounts.clone(),
             )));
         }
     }

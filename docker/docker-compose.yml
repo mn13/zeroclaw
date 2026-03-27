@@ -24,6 +24,9 @@ services:
       ZEROCLAW_GOOGLE_REDIRECT_HOST: "${ZEROCLAW_GOOGLE_REDIRECT_HOST:-}"
       ZCGW_SIGNAL_CLI_PORT: "${ZCGW_SIGNAL_CLI_PORT:-8686}"
       ZCGW_SIGNAL_CLI_PATH: "${ZCGW_SIGNAL_CLI_PATH:-signal-cli}"
+      COMPOSIO_API_KEY: "${COMPOSIO_API_KEY:-}"
+      COMPOSIO_REDIRECT_HOST: "${COMPOSIO_REDIRECT_HOST:-${ZEROCLAW_GOOGLE_REDIRECT_HOST:-}}"
+      ZCGW_TENANT_ID: "${ZCGW_TENANT_ID:-}"
     volumes:
       - ./config/zcgw.toml:/etc/zcgw/config.toml
       - ./config/zc-venice.toml:/etc/zcgw/zc-template.toml:ro

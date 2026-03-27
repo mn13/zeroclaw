@@ -111,6 +111,16 @@ desired_state = "running"
 | `ZCGW_SIGNAL_CLI_PATH` | `signal-cli` | Path to the `signal-cli` binary. |
 | `ZCGW_SIGNAL_CLI_PORT` | `8686` | HTTP port for the signal-cli JSON-RPC daemon. |
 
+#### Composio Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COMPOSIO_API_KEY` | _(empty)_ | Composio API key for managed OAuth connections. |
+| `COMPOSIO_REDIRECT_HOST` | _(ZEROCLAW_GOOGLE_REDIRECT_HOST)_ | Public hostname for Composio OAuth redirect URI. Falls back to `ZEROCLAW_GOOGLE_REDIRECT_HOST`. |
+| `ZCGW_TENANT_ID` | _(empty)_ | Tenant identifier for scoping Composio identifiers. When set, the gateway identity becomes `zcgw-{tenant}-gateway` instead of `zcgw-gateway`, and MCP server names use `zcgw-{tenant}-{slug}`. Required when multiple gateways share a single Composio API key. Must be lowercase alphanumeric with hyphens, no leading/trailing hyphen. |
+
+**Connection model:** All Composio connections are created under the gateway's own identity (`zcgw-gateway` or `zcgw-{tenant}-gateway`). Connections are then assigned to individual agent instances via the API or UI. When an instance's config is synced from the gateway, the gateway writes a `connected_accounts` map (toolkit slug to `connected_account_id`) so the agent can resolve connections directly without querying Composio by `user_id`. Only connections whose `user_id` matches the gateway prefix are imported during sync, ensuring tenant isolation when a Composio API key is shared across gateways.
+
 API key environment variables (`VENICE_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) are automatically forwarded to new agent containers.
 
 ## Instance Registry

@@ -55,6 +55,47 @@ pub struct SignalLinkPendingState {
     pub created_at: std::time::Instant,
 }
 
+/// A Composio connected account managed at the gateway level.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposioConnection {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    pub toolkit_slug: String,
+    pub display_name: String,
+    pub user_id: String,
+    pub assigned_to: Vec<String>,
+    pub status: String,
+    pub connected_at: String,
+}
+
+/// Persistent store for gateway-level Composio connections.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ComposioStore {
+    pub connections: Vec<ComposioConnection>,
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, ComposioMcpServerEntry>,
+}
+
+/// An MCP server created via Composio's hosted MCP API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposioMcpServerEntry {
+    pub server_id: String,
+    pub toolkit_slug: String,
+    pub created_at: String,
+}
+
+/// Pending state for an in-progress Composio OAuth flow.
+#[allow(dead_code)]
+pub struct ComposioOAuthPendingState {
+    pub user_id: String,
+    pub toolkit_slug: String,
+    pub connected_account_id: Option<String>,
+    pub name: String,
+    pub instance_id: Option<String>,
+    pub created_at: std::time::Instant,
+}
+
 /// Configuration for the signal-cli daemon managed by the gateway.
 #[derive(Debug, Clone)]
 pub struct SignalCliConfig {
@@ -92,4 +133,14 @@ pub struct AppState {
     pub signal_cli_handle: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
     /// Pending Signal link operations (keyed by a random ID).
     pub signal_link_pending: Arc<std::sync::Mutex<HashMap<String, SignalLinkPendingState>>>,
+    /// Composio API key (from COMPOSIO_API_KEY env var).
+    pub composio_api_key: Option<String>,
+    /// Gateway-level Composio connections store.
+    pub composio_store: Arc<tokio::sync::RwLock<ComposioStore>>,
+    /// Pending Composio OAuth flows (keyed by a random ID).
+    pub composio_oauth_pending: Arc<std::sync::Mutex<HashMap<String, ComposioOAuthPendingState>>>,
+    /// Public hostname for Composio OAuth redirect URI.
+    pub composio_redirect_host: Option<String>,
+    /// Tenant ID for scoping Composio user IDs across shared API keys.
+    pub tenant_id: Option<String>,
 }

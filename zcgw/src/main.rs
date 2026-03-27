@@ -60,8 +60,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -145,17 +144,14 @@ async fn main() -> anyhow::Result<()> {
 
     let docker_config = docker::DockerConfig {
         image: std::env::var("ZCGW_DOCKER_IMAGE").unwrap_or_else(|_| "zeroclaw:latest".into()),
-        network: std::env::var("ZCGW_DOCKER_NETWORK")
-            .unwrap_or_else(|_| "zeroclaw-net".into()),
+        network: std::env::var("ZCGW_DOCKER_NETWORK").unwrap_or_else(|_| "zeroclaw-net".into()),
         grpc_port: std::env::var("ZCGW_DOCKER_GRPC_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(50051),
-        memory_limit: std::env::var("ZCGW_DOCKER_MEMORY_LIMIT")
-            .unwrap_or_else(|_| "512m".into()),
+        memory_limit: std::env::var("ZCGW_DOCKER_MEMORY_LIMIT").unwrap_or_else(|_| "512m".into()),
         env_vars: docker_env_vars,
-        config_template_path: std::env::var("ZCGW_DOCKER_CONFIG_TEMPLATE")
-            .unwrap_or_default(),
+        config_template_path: std::env::var("ZCGW_DOCKER_CONFIG_TEMPLATE").unwrap_or_default(),
         host_mode,
         agents_dir,
         host_agents_dir,
@@ -170,7 +166,10 @@ async fn main() -> anyhow::Result<()> {
     let gog_home = docker_config.agents_dir.join(".google").join("gogcli");
     tokio::fs::create_dir_all(&gog_home).await?;
 
-    let accounts_path = docker_config.agents_dir.join(".google").join("accounts.json");
+    let accounts_path = docker_config
+        .agents_dir
+        .join(".google")
+        .join("accounts.json");
     let google_accounts = if accounts_path.exists() {
         match tokio::fs::read_to_string(&accounts_path).await {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
@@ -186,7 +185,10 @@ async fn main() -> anyhow::Result<()> {
 
     // If google credentials are configured, set them up for the gateway's GOG CLI
     if let Some(ref creds_json) = google_credentials_json {
-        let creds_path = docker_config.agents_dir.join(".google").join("credentials_tmp.json");
+        let creds_path = docker_config
+            .agents_dir
+            .join(".google")
+            .join("credentials_tmp.json");
         if let Err(e) = tokio::fs::write(&creds_path, creds_json).await {
             tracing::warn!(error = %e, "failed to write google credentials for gateway GOG");
         } else {
@@ -219,13 +221,17 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8686);
-    let signal_cli_path = std::env::var("ZCGW_SIGNAL_CLI_PATH")
-        .unwrap_or_else(|_| "signal-cli".to_string());
+    let signal_cli_path =
+        std::env::var("ZCGW_SIGNAL_CLI_PATH").unwrap_or_else(|_| "signal-cli".to_string());
     let signal_data_dir = docker_config.agents_dir.join(".signal").join("data");
     tokio::fs::create_dir_all(&signal_data_dir).await?;
 
-    let signal_connections_path = docker_config.agents_dir.join(".signal").join("connections.json");
-    let signal_connections: app_state::SignalConnectionsStore = if signal_connections_path.exists() {
+    let signal_connections_path = docker_config
+        .agents_dir
+        .join(".signal")
+        .join("connections.json");
+    let signal_connections: app_state::SignalConnectionsStore = if signal_connections_path.exists()
+    {
         match tokio::fs::read_to_string(&signal_connections_path).await {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
             Err(e) => {
@@ -253,6 +259,58 @@ async fn main() -> anyhow::Result<()> {
 
     let signal_connections = Arc::new(tokio::sync::RwLock::new(signal_connections));
     let signal_link_pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+    // Initialize Composio integration
+    let composio_api_key = std::env::var("COMPOSIO_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let composio_redirect_host = std::env::var("COMPOSIO_REDIRECT_HOST")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| google_redirect_host.clone());
+
+    // Tenant ID for scoping Composio identifiers across shared API keys
+    let tenant_id: Option<String> = std::env::var("ZCGW_TENANT_ID")
+        .ok()
+        .filter(|s| !s.is_empty());
+    if let Some(ref tid) = tenant_id {
+        // Validate: lowercase alphanumeric + hyphens, no leading/trailing hyphen
+        let valid = !tid.starts_with('-')
+            && !tid.ends_with('-')
+            && !tid.is_empty()
+            && tid
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !valid {
+            anyhow::bail!(
+                "ZCGW_TENANT_ID '{}' is invalid: must be lowercase alphanumeric with hyphens, no leading/trailing hyphen",
+                tid
+            );
+        }
+        info!(tenant_id = %tid, "tenant scoping enabled for Composio identifiers");
+    }
+
+    let composio_dir = docker_config.agents_dir.join(".composio");
+    tokio::fs::create_dir_all(&composio_dir).await?;
+
+    let composio_store_path = composio_dir.join("store.json");
+    let composio_store: app_state::ComposioStore = if composio_store_path.exists() {
+        match tokio::fs::read_to_string(&composio_store_path).await {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load composio store");
+                app_state::ComposioStore::default()
+            }
+        }
+    } else {
+        app_state::ComposioStore::default()
+    };
+    let composio_store = Arc::new(tokio::sync::RwLock::new(composio_store));
+    let composio_oauth_pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+    if composio_api_key.is_some() {
+        info!("Composio API key configured");
+    }
 
     // Spawn signal-cli daemon supervisor (restarts on crash if accounts exist)
     let supervisor_handle = signal_cli_handle.clone();
@@ -296,6 +354,11 @@ async fn main() -> anyhow::Result<()> {
         signal_cli_config,
         signal_cli_handle,
         signal_link_pending: signal_link_pending.clone(),
+        composio_api_key,
+        composio_store,
+        composio_oauth_pending: composio_oauth_pending.clone(),
+        composio_redirect_host,
+        tenant_id,
     };
 
     // Background task: prune expired OAuth pending entries (older than 10 minutes) every 60s.
@@ -309,6 +372,9 @@ async fn main() -> anyhow::Result<()> {
                 pending.retain(|_, v| v.created_at > cutoff);
             }
             if let Ok(mut pending) = signal_link_pending.lock() {
+                pending.retain(|_, v| v.created_at > cutoff);
+            }
+            if let Ok(mut pending) = composio_oauth_pending.lock() {
                 pending.retain(|_, v| v.created_at > cutoff);
             }
         }
@@ -337,10 +403,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/instances/{id}/config", put(api::update_config))
         .route("/api/instances/{id}/tools", get(api::list_tools))
         .route("/api/instances/{id}/memory", get(api::list_memory))
-        .route(
-            "/api/instances/{id}/memory/search",
-            get(api::search_memory),
-        )
+        .route("/api/instances/{id}/memory/search", get(api::search_memory))
         .route("/api/instances/{id}/memory", post(api::store_memory))
         .route(
             "/api/instances/{id}/memory/{key}",
@@ -370,7 +433,10 @@ fn build_router(state: AppState) -> Router {
             post(admin::instance_action),
         )
         .route("/api/admin/template", get(admin::get_template))
-        .route("/api/admin/workspace-templates", get(admin::get_workspace_templates))
+        .route(
+            "/api/admin/workspace-templates",
+            get(admin::get_workspace_templates),
+        )
         // Connectors
         .route(
             "/api/instances/{id}/connectors",
@@ -381,20 +447,57 @@ fn build_router(state: AppState) -> Router {
             "/api/instances/{id}/mcp-servers",
             get(api::get_mcp_servers).put(api::update_mcp_servers),
         )
-        // Integrations: Composio
+        // Integrations: Composio — gateway-level
+        .route(
+            "/api/admin/composio/config",
+            get(api::get_composio_gateway_config).put(api::update_composio_gateway_config),
+        )
+        .route(
+            "/api/admin/composio/connections",
+            get(api::list_composio_connections),
+        )
+        .route(
+            "/api/admin/composio/connect",
+            post(api::composio_connect_init),
+        )
+        .route(
+            "/api/admin/composio/connections/{connection_id}",
+            delete(api::delete_composio_connection_global),
+        )
+        .route("/api/admin/composio/apps", get(api::list_composio_apps))
+        .route(
+            "/api/admin/composio/sync",
+            post(api::sync_composio_connections),
+        )
+        .route("/composio/callback", get(api::composio_oauth_callback))
+        // Integrations: Composio — per-instance
         .route(
             "/api/instances/{id}/integrations/composio",
             get(api::get_composio).put(api::update_composio),
         )
+        .route(
+            "/api/instances/{id}/integrations/composio/connections",
+            get(api::list_instance_composio_connections),
+        )
+        .route(
+            "/api/instances/{id}/integrations/composio/connect",
+            post(api::composio_instance_connect),
+        )
+        .route(
+            "/api/instances/{id}/integrations/composio/connections/{connection_id}",
+            delete(api::unassign_composio_connection),
+        )
+        .route(
+            "/api/instances/{id}/integrations/composio/assign",
+            post(api::assign_composio_connection),
+        )
+        .route(
+            "/api/instances/{id}/integrations/composio/mcp-sync",
+            post(api::composio_mcp_sync),
+        )
         // Integrations: Google (GOGCLI) — gateway-level
-        .route(
-            "/api/admin/google/accounts",
-            get(api::list_google_accounts),
-        )
-        .route(
-            "/api/admin/google/auth/init",
-            post(api::google_auth_init),
-        )
+        .route("/api/admin/google/accounts", get(api::list_google_accounts))
+        .route("/api/admin/google/auth/init", post(api::google_auth_init))
         .route(
             "/api/admin/google/auth/complete",
             post(api::google_auth_complete),
@@ -418,10 +521,7 @@ fn build_router(state: AppState) -> Router {
             "/api/admin/signal/connections",
             get(api::list_signal_connections),
         )
-        .route(
-            "/api/admin/signal/link/start",
-            post(api::signal_link_start),
-        )
+        .route("/api/admin/signal/link/start", post(api::signal_link_start))
         .route(
             "/api/admin/signal/link/finish",
             post(api::signal_link_finish),
@@ -460,11 +560,11 @@ fn build_router(state: AppState) -> Router {
         );
 
     api.layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::auth_middleware,
-        ))
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        state.clone(),
+        auth::auth_middleware,
+    ))
+    .layer(CorsLayer::permissive())
+    .with_state(state)
 }
 
 async fn shutdown_signal() {

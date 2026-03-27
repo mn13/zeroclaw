@@ -329,6 +329,103 @@ export const updateComposio = (
     { method: "PUT", body: JSON.stringify(data) },
   );
 
+// ── Integrations: Composio — Gateway-level ──
+export interface ComposioGatewayConfig {
+  has_api_key: boolean;
+  total_connections: number;
+  mcp_servers: number;
+  tenant_id: string | null;
+}
+
+export interface ComposioConnectionInfo {
+  id: string;
+  name: string;
+  toolkit_slug: string;
+  display_name: string;
+  user_id: string;
+  assigned_to: string[];
+  status: string;
+  connected_at: string;
+}
+
+export interface ComposioApp {
+  id: string;
+  toolkit_slug: string;
+  name: string;
+}
+
+export interface ComposioInstanceConfig extends ComposioConfig {
+  has_gateway_api_key: boolean;
+  user_id: string;
+  connections: ComposioConnectionInfo[];
+}
+
+export const getComposioGatewayConfig = () =>
+  api<ComposioGatewayConfig>("/api/admin/composio/config");
+
+export const listComposioConnections = () =>
+  api<{ connections: ComposioConnectionInfo[] }>("/api/admin/composio/connections");
+
+export const syncComposioConnections = () =>
+  api<{ ok: boolean; synced: number; total_from_composio: number; connections: ComposioConnectionInfo[] }>(
+    "/api/admin/composio/sync",
+    { method: "POST" },
+  );
+
+export const listComposioApps = () =>
+  api<{ apps: ComposioApp[] }>("/api/admin/composio/apps");
+
+export const composioConnectInit = (
+  opts: { instance_id?: string; name?: string; app?: string; auth_config_id?: string },
+) =>
+  api<{ redirect_url: string; connected_account_id: string | null; pending_id: string; user_id: string }>(
+    "/api/admin/composio/connect",
+    { method: "POST", body: JSON.stringify(opts) },
+  );
+
+export const deleteComposioConnectionGlobal = (connection_id: string) =>
+  api<{ ok: boolean }>(
+    `/api/admin/composio/connections/${encodeURIComponent(connection_id)}`,
+    { method: "DELETE" },
+  );
+
+// ── Integrations: Composio — Per-instance (enhanced) ──
+export const getComposioInstance = (id: string) =>
+  api<ComposioInstanceConfig>(`/api/instances/${encodeURIComponent(id)}/integrations/composio`);
+
+export const composioInstanceConnect = (
+  id: string,
+  app?: string,
+  auth_config_id?: string,
+) =>
+  api<{ redirect_url: string; connected_account_id: string | null; pending_id: string; user_id: string }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/composio/connect`,
+    { method: "POST", body: JSON.stringify({ app, auth_config_id }) },
+  );
+
+export const listInstanceComposioConnections = (id: string) =>
+  api<{ connections: ComposioConnectionInfo[] }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/composio/connections`,
+  );
+
+export const unassignComposioConnection = (id: string, connection_id: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/composio/connections/${encodeURIComponent(connection_id)}`,
+    { method: "DELETE" },
+  );
+
+export const assignComposioConnection = (instanceId: string, connectionId: string) =>
+  api<{ ok: boolean }>(
+    `/api/instances/${encodeURIComponent(instanceId)}/integrations/composio/assign`,
+    { method: "POST", body: JSON.stringify({ connection_id: connectionId }) },
+  );
+
+export const composioMcpSync = (id: string) =>
+  api<{ ok: boolean; synced_toolkits: string[]; gap_warning: string }>(
+    `/api/instances/${encodeURIComponent(id)}/integrations/composio/mcp-sync`,
+    { method: "POST" },
+  );
+
 // ── Integrations: Google ──
 export interface GatewayGoogleAccount {
   email: string;

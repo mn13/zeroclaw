@@ -8,8 +8,14 @@ import {
   signalLinkStart,
   signalLinkFinish,
   deleteSignalConnection,
+  getComposioGatewayConfig,
+  listComposioConnections,
+  listComposioApps,
+  composioConnectInit,
+  deleteComposioConnectionGlobal,
+  syncComposioConnections,
 } from "../api";
-import type { GatewayGoogleAccount, SignalConnection } from "../api";
+import type { GatewayGoogleAccount, SignalConnection, ComposioGatewayConfig, ComposioConnectionInfo, ComposioApp } from "../api";
 import { clipCorner } from "../theme";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -17,7 +23,7 @@ interface Props {
   toast: (msg: string, isError?: boolean) => void;
 }
 
-type Tab = "google" | "signal";
+type Tab = "google" | "signal" | "composio";
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
@@ -526,6 +532,231 @@ function SignalGatewayTab({ toast }: Props) {
   );
 }
 
+// ── Composio Gateway Tab ──
+
+function ComposioGatewayTab({ toast }: Props) {
+  const [config, setConfig] = useState<ComposioGatewayConfig | null>(null);
+  const [connections, setConnections] = useState<ComposioConnectionInfo[]>([]);
+  const [apps, setApps] = useState<ComposioApp[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [connectName, setConnectName] = useState("");
+  const [connectLoading, setConnectLoading] = useState<string | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    Promise.all([getComposioGatewayConfig(), listComposioConnections()])
+      .then(([cfg, conns]) => {
+        setConfig(cfg);
+        setConnections(conns.connections);
+      })
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Composio config", true))
+      .finally(() => setLoading(false));
+  }, [toast]);
+
+  // Load available apps when API key is configured
+  useEffect(() => {
+    if (config?.has_api_key) {
+      listComposioApps()
+        .then((resp) => setApps(resp.apps))
+        .catch(() => {}); // silently fail — apps list is best-effort
+    }
+  }, [config?.has_api_key]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleConnect = useCallback(async (app: ComposioApp) => {
+    if (!connectName.trim()) {
+      toast("Enter a connection name first (e.g. \"ava gmail\")", true);
+      return;
+    }
+    setConnectLoading(app.id);
+    try {
+      const resp = await composioConnectInit({ name: connectName.trim(), app: app.toolkit_slug, auth_config_id: app.id });
+      if (resp.redirect_url) {
+        window.open(resp.redirect_url, "_blank");
+        toast("OAuth window opened. Complete authorization and refresh this page.");
+      } else {
+        toast("Connection initiated but no redirect URL returned", true);
+      }
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Failed to initiate connection", true);
+    } finally {
+      setConnectLoading(null);
+    }
+  }, [connectName, toast]);
+
+  const handleRemove = useCallback(async (connectionId: string) => {
+    if (!confirm("Remove this Composio connection from all instances?")) return;
+    try {
+      await deleteComposioConnectionGlobal(connectionId);
+      toast("Connection removed");
+      load();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Remove failed", true);
+    }
+  }, [toast, load]);
+
+  const handleSync = useCallback(async () => {
+    setSyncLoading(true);
+    try {
+      const resp = await syncComposioConnections();
+      setConnections(resp.connections);
+      toast(resp.synced > 0 ? `Synced ${resp.synced} new connection(s) from Composio` : "Already up to date");
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Sync failed", true);
+    } finally {
+      setSyncLoading(false);
+    }
+  }, [toast]);
+
+  if (loading && !config) {
+    return (
+      <div style={{ padding: 32, color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 14 }}>
+        Loading Composio config...
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: 24, maxWidth: 600 }}>
+      <div style={{ marginBottom: 24 }}>
+        <span style={{ fontFamily: "Syne, sans-serif", fontSize: 16, fontWeight: 700, color: "var(--amber)" }}>
+          Composio
+        </span>
+        <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+          Manage gateway-level Composio connections. Connect OAuth apps and assign them to agents on the agent CONNECT page.
+        </div>
+      </div>
+
+      {/* API Key Status */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ ...labelStyle, marginBottom: 6 }}>API Key</div>
+        <div style={{
+          padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+          clipPath: clipCorner(6), fontFamily: "JetBrains Mono, monospace", fontSize: 12,
+          color: config?.has_api_key ? "#22c55e" : "var(--text-dim)",
+        }}>
+          {config?.has_api_key ? "Configured (via COMPOSIO_API_KEY env var)" : "Not configured. Set COMPOSIO_API_KEY env var and restart gateway."}
+        </div>
+      </div>
+
+      {/* Connections */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <span style={labelStyle}>Connections ({connections.length})</span>
+          {config?.has_api_key && (
+            <button
+              onClick={handleSync}
+              disabled={syncLoading}
+              style={{
+                ...btnSecondary,
+                padding: "4px 12px",
+                fontSize: 10,
+                opacity: syncLoading ? 0.4 : 1,
+                cursor: syncLoading ? "default" : "pointer",
+              }}
+            >
+              {syncLoading ? "Syncing..." : "Sync from Composio"}
+            </button>
+          )}
+        </div>
+        {connections.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+            {connections.map((conn) => (
+              <div
+                key={conn.id}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                  clipPath: clipCorner(6),
+                }}
+              >
+                <div>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                    {conn.name || conn.display_name}
+                  </span>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                    {conn.toolkit_slug}
+                  </span>
+                  {conn.assigned_to.length > 0 && (
+                    <span style={{ marginLeft: 8, fontSize: 10, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                      [{conn.assigned_to.join(", ")}]
+                    </span>
+                  )}
+                  <span style={{
+                    marginLeft: 8, fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 3,
+                    background: conn.status === "ACTIVE" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
+                    color: conn.status === "ACTIVE" ? "#22c55e" : "#ef4444",
+                    fontFamily: "JetBrains Mono, monospace",
+                  }}>
+                    {conn.status}
+                  </span>
+                </div>
+                <button onClick={() => handleRemove(conn.id)} style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13, marginBottom: 16 }}>
+            No Composio connections. Connect an app below.
+          </div>
+        )}
+      </div>
+
+      {/* Connect New App */}
+      {config?.has_api_key && (
+        <div style={{ marginTop: 24, padding: 16, border: "1px solid var(--border)", clipPath: clipCorner(8) }}>
+          <div style={{ ...labelStyle, marginBottom: 8 }}>Connect New App</div>
+          <input
+            value={connectName}
+            onChange={(e) => setConnectName(e.target.value)}
+            placeholder='Connection name (e.g. "ava gmail")'
+            style={{ ...inputStyle, marginBottom: 12 }}
+          />
+          {apps.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {apps.map((app) => (
+                <div
+                  key={app.id}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "6px 10px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                    clipPath: clipCorner(4),
+                  }}
+                >
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "var(--text-primary)" }}>
+                    {app.toolkit_slug || app.name}
+                  </span>
+                  <button
+                    onClick={() => handleConnect(app)}
+                    disabled={connectLoading === app.id}
+                    style={{
+                      ...btnPrimary, padding: "3px 12px", fontSize: 10,
+                      opacity: connectLoading === app.id ? 0.4 : 1,
+                      cursor: connectLoading === app.id ? "default" : "pointer",
+                    }}
+                  >
+                    {connectLoading === app.id ? "..." : "Connect"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 12 }}>
+              No apps found. Configure auth integrations in your Composio dashboard first.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Integrations Page (Gateway-Level) ──
 
 export default function Integrations({ toast }: Props) {
@@ -548,11 +779,15 @@ export default function Integrations({ toast }: Props) {
         <button onClick={() => setTab("signal")} style={tabBtnStyle(tab === "signal")}>
           Signal
         </button>
+        <button onClick={() => setTab("composio")} style={tabBtnStyle(tab === "composio")}>
+          Composio
+        </button>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }}>
         {tab === "google" && <GoogleGatewayTab toast={toast} />}
         {tab === "signal" && <SignalGatewayTab toast={toast} />}
+        {tab === "composio" && <ComposioGatewayTab toast={toast} />}
       </div>
     </div>
   );

@@ -8,13 +8,19 @@ import {
   getGoogle,
   updateGoogle,
   deleteGoogleAccount,
-  getComposio,
   updateComposio,
+  getComposioInstance,
+  composioInstanceConnect,
+  unassignComposioConnection,
+  assignComposioConnection,
+  listComposioConnections,
+  syncComposioConnections,
+  composioMcpSync,
   getSignal,
   assignSignal,
   unassignSignal,
 } from "../api";
-import type { ChannelSchema, ChannelField, McpServerConfig, GoogleConfig, GatewayGoogleAccount, ComposioConfig, SignalConfig, SignalConnection } from "../api";
+import type { ChannelSchema, ChannelField, McpServerConfig, GoogleConfig, GatewayGoogleAccount, ComposioInstanceConfig, ComposioConnectionInfo, SignalConfig, SignalConnection } from "../api";
 import { clipCorner } from "../theme";
 
 interface Props {
@@ -222,9 +228,14 @@ function IntegrationsTab({ instanceId, toast }: Props) {
   const [googleLoading, setGoogleLoading] = useState(true);
   const [assignLoading, setAssignLoading] = useState(false);
 
-  const [composioConfig, setComposioConfig] = useState<ComposioConfig | null>(null);
+  const [composioConfig, setComposioConfig] = useState<ComposioInstanceConfig | null>(null);
   const [composioEnabled, setComposioEnabled] = useState(false);
   const [composioLoading, setComposioLoading] = useState(true);
+  const [composioConnectApp, setComposioConnectApp] = useState("");
+  const [composioConnectLoading, setComposioConnectLoading] = useState(false);
+  const [composioSyncLoading, setComposioSyncLoading] = useState(false);
+  const [composioGatewayConnections, setComposioGatewayConnections] = useState<ComposioConnectionInfo[]>([]);
+  const [composioAssignLoading, setComposioAssignLoading] = useState(false);
 
   const [signalConfig, setSignalConfig] = useState<SignalConfig | null>(null);
   const [signalLoading, setSignalLoading] = useState(true);
@@ -243,10 +254,23 @@ function IntegrationsTab({ instanceId, toast }: Props) {
 
   const loadComposio = useCallback(() => {
     setComposioLoading(true);
-    getComposio(instanceId)
-      .then((c) => {
+    Promise.all([getComposioInstance(instanceId), listComposioConnections()])
+      .then(async ([c, gw]) => {
         setComposioConfig(c);
         setComposioEnabled(c.enabled);
+        // If the local store has no connections but the gateway API key is
+        // configured, auto-sync from Composio to pick up any connections
+        // created via OAuth whose callbacks may not have persisted locally.
+        if (gw.connections.length === 0 && c.has_gateway_api_key) {
+          try {
+            const synced = await syncComposioConnections();
+            if (synced.connections && synced.connections.length > 0) {
+              setComposioGatewayConnections(synced.connections);
+              return;
+            }
+          } catch { /* ignore sync failures */ }
+        }
+        setComposioGatewayConnections(gw.connections);
       })
       .catch((err) => toast(err instanceof Error ? err.message : "Failed to load Composio config", true))
       .finally(() => setComposioLoading(false));
@@ -291,6 +315,72 @@ function IntegrationsTab({ instanceId, toast }: Props) {
       setComposioEnabled(!next);
     }
   }, [instanceId, composioEnabled, toast, loadComposio]);
+
+  const handleComposioSyncGateway = useCallback(async () => {
+    try {
+      await updateComposio(instanceId, { enabled: true, sync_gateway: true } as any);
+      toast("Synced gateway credentials to instance");
+      loadComposio();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Sync failed", true);
+    }
+  }, [instanceId, toast, loadComposio]);
+
+  const handleComposioConnect = useCallback(async () => {
+    if (!composioConnectApp) return;
+    setComposioConnectLoading(true);
+    try {
+      const resp = await composioInstanceConnect(instanceId, composioConnectApp);
+      if (resp.redirect_url) {
+        window.open(resp.redirect_url, "_blank");
+        toast("OAuth window opened. Complete authorization and refresh.");
+      }
+      setComposioConnectApp("");
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Connect failed", true);
+    } finally {
+      setComposioConnectLoading(false);
+    }
+  }, [instanceId, composioConnectApp, toast]);
+
+  const handleComposioMcpSync = useCallback(async () => {
+    setComposioSyncLoading(true);
+    try {
+      const resp = await composioMcpSync(instanceId);
+      toast(`MCP servers synced for: ${resp.synced_toolkits.join(", ")}`);
+      if (resp.gap_warning) {
+        toast(resp.gap_warning, true);
+      }
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "MCP sync failed", true);
+    } finally {
+      setComposioSyncLoading(false);
+    }
+  }, [instanceId, toast]);
+
+  const handleComposioUnassign = useCallback(async (connectionId: string) => {
+    if (!confirm("Unassign this Composio connection from this agent?")) return;
+    try {
+      await unassignComposioConnection(instanceId, connectionId);
+      toast("Connection unassigned");
+      loadComposio();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Unassign failed", true);
+    }
+  }, [instanceId, toast, loadComposio]);
+
+  const handleComposioAssign = useCallback(async (connectionId: string) => {
+    setComposioAssignLoading(true);
+    try {
+      await assignComposioConnection(instanceId, connectionId);
+      toast("Connection assigned");
+      loadComposio();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : "Assign failed", true);
+    } finally {
+      setComposioAssignLoading(false);
+    }
+  }, [instanceId, toast, loadComposio]);
 
   const handleUnassign = useCallback(async (email: string) => {
     if (!confirm(`Unassign ${email} from this agent?`)) return;
@@ -500,11 +590,161 @@ function IntegrationsTab({ instanceId, toast }: Props) {
         </div>
 
         {composioConfig && (
-          <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13 }}>
-            {composioConfig.has_api_key ? (
-              <span>API key configured. Entity ID: <code style={{ fontFamily: "JetBrains Mono, monospace", color: "var(--text-primary)" }}>{composioConfig.entity_id || "default"}</code></span>
-            ) : (
-              <span>API key not configured. Set it up on the gateway INTEGRATIONS page.</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* Status info */}
+            <div style={{ color: "var(--text-dim)", fontFamily: "Outfit, sans-serif", fontSize: 13 }}>
+              {composioConfig.has_api_key ? (
+                <span>API key configured. Entity ID: <code style={{ fontFamily: "JetBrains Mono, monospace", color: "var(--text-primary)" }}>{composioConfig.entity_id || "default"}</code></span>
+              ) : (
+                <span>Instance API key not configured.</span>
+              )}
+              {composioConfig.has_gateway_api_key && (
+                <span style={{ marginLeft: 8, fontSize: 11, color: "#22c55e" }}>(Gateway key available)</span>
+              )}
+            </div>
+
+            {/* Sync from Gateway button */}
+            {composioConfig.has_gateway_api_key && (
+              <button onClick={handleComposioSyncGateway} style={{ ...btnPrimary, alignSelf: "flex-start" }}>
+                Sync from Gateway
+              </button>
+            )}
+
+            {/* Connections for this instance */}
+            {composioConfig.connections && composioConfig.connections.length > 0 && (
+              <div>
+                <div style={{ ...labelStyle, marginBottom: 8 }}>Assigned Connections</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {composioConfig.connections.map((conn: ComposioConnectionInfo) => (
+                    <div
+                      key={conn.id}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                        clipPath: clipCorner(6),
+                      }}
+                    >
+                      <div>
+                        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                          {conn.name || conn.display_name}
+                        </span>
+                        <span style={{ marginLeft: 8, fontSize: 11, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                          {conn.toolkit_slug}
+                        </span>
+                        <span style={{
+                          marginLeft: 8, fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 3,
+                          background: conn.status === "ACTIVE" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
+                          color: conn.status === "ACTIVE" ? "#22c55e" : "#ef4444",
+                          fontFamily: "JetBrains Mono, monospace",
+                        }}>
+                          {conn.status}
+                        </span>
+                      </div>
+                      <button onClick={() => handleComposioUnassign(conn.id)} style={{ ...btnDanger, padding: "4px 10px", fontSize: 10 }}>
+                        Unassign
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Available Gateway Connections */}
+            {composioConfig.has_gateway_api_key && (() => {
+              const assignedIds = new Set((composioConfig.connections ?? []).map((c: ComposioConnectionInfo) => c.id));
+              const unassigned = composioGatewayConnections.filter((c) => !assignedIds.has(c.id));
+              if (unassigned.length === 0) return null;
+              return (
+                <div>
+                  <div style={{ ...labelStyle, marginBottom: 8 }}>Available Gateway Connections</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {unassigned.map((conn) => (
+                      <div
+                        key={conn.id}
+                        style={{
+                          display: "flex", alignItems: "center", justifyContent: "space-between",
+                          padding: "8px 12px", background: "var(--bg-input)", border: "1px solid var(--border)",
+                          clipPath: clipCorner(6),
+                        }}
+                      >
+                        <div>
+                          <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                            {conn.name || conn.display_name}
+                          </span>
+                          <span style={{ marginLeft: 8, fontSize: 11, color: "var(--text-dim)", fontFamily: "JetBrains Mono, monospace" }}>
+                            {conn.toolkit_slug}
+                          </span>
+                          <span style={{
+                            marginLeft: 8, fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 3,
+                            background: conn.status === "ACTIVE" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
+                            color: conn.status === "ACTIVE" ? "#22c55e" : "#ef4444",
+                            fontFamily: "JetBrains Mono, monospace",
+                          }}>
+                            {conn.status}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => handleComposioAssign(conn.id)}
+                          disabled={composioAssignLoading}
+                          style={{
+                            ...btnPrimary, padding: "4px 10px", fontSize: 10,
+                            opacity: composioAssignLoading ? 0.4 : 1,
+                            cursor: composioAssignLoading ? "default" : "pointer",
+                          }}
+                        >
+                          Assign
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Connect App */}
+            {composioConfig.has_gateway_api_key && (
+              <div style={{ padding: 12, border: "1px solid var(--border)", clipPath: clipCorner(6) }}>
+                <div style={{ ...labelStyle, marginBottom: 6 }}>Connect New App</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    value={composioConnectApp}
+                    onChange={(e) => setComposioConnectApp(e.target.value)}
+                    placeholder="App name (e.g. gmail, slack)"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button
+                    onClick={handleComposioConnect}
+                    disabled={!composioConnectApp || composioConnectLoading}
+                    style={{
+                      ...btnPrimary,
+                      opacity: composioConnectApp && !composioConnectLoading ? 1 : 0.4,
+                      cursor: composioConnectApp && !composioConnectLoading ? "pointer" : "default",
+                    }}
+                  >
+                    {composioConnectLoading ? "..." : "Connect"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* MCP Sync */}
+            {composioConfig.connections && composioConfig.connections.length > 0 && composioConfig.has_gateway_api_key && (
+              <div>
+                <button
+                  onClick={handleComposioMcpSync}
+                  disabled={composioSyncLoading}
+                  style={{
+                    ...btnSecondary,
+                    opacity: composioSyncLoading ? 0.4 : 1,
+                    cursor: composioSyncLoading ? "default" : "pointer",
+                  }}
+                >
+                  {composioSyncLoading ? "Syncing..." : "Sync MCP Servers"}
+                </button>
+                <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>
+                  Creates Composio-hosted MCP server entries in this instance's config. Note: MCP client runtime is not yet implemented.
+                </div>
+              </div>
             )}
           </div>
         )}

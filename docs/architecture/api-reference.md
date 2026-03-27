@@ -443,25 +443,109 @@ Update MCP server configuration. Requires restart.
 
 ---
 
-## Integrations — Composio
+## Integrations — Composio (Gateway-Level)
 
-### `GET /api/instances/{id}/integrations/composio`
+Composio connections are managed at the **gateway level** and assigned to individual agent instances. All connections are created under the gateway's own identity (`zcgw-gateway`), not per-instance identities. When `ZCGW_TENANT_ID` is set, the identity becomes `zcgw-{tenant}-gateway` to prevent collisions when multiple gateways share a single Composio API key.
 
-Get Composio integration status.
+**Connection lifecycle:**
+1. Create a connection via OAuth (`POST /api/admin/composio/connect`)
+2. Sync from Composio to populate the local store (`POST /api/admin/composio/sync`)
+3. Assign the connection to an instance (`POST /api/instances/{id}/integrations/composio/assign`)
+4. Sync gateway credentials to the instance (`PUT /api/instances/{id}/integrations/composio` with `sync_gateway: true`)
+
+### `GET /api/admin/composio/config`
+
+Get gateway-level Composio configuration status.
 
 **Response** `200 OK`:
 ```json
-{"enabled": false, "entity_id": "", "has_api_key": false}
+{"has_api_key": true, "total_connections": 3, "mcp_servers": 1, "tenant_id": "acme"}
+```
+
+`tenant_id` is `null` when `ZCGW_TENANT_ID` is not set.
+
+### `GET /api/admin/composio/connections`
+
+List all gateway-level Composio connections.
+
+**Response** `200 OK`:
+```json
+{
+  "connections": [
+    {
+      "id": "conn-abc123",
+      "name": "Work Gmail",
+      "toolkit_slug": "gmail",
+      "display_name": "user@example.com",
+      "user_id": "zcgw-gateway",
+      "assigned_to": ["agent-ava"],
+      "status": "ACTIVE",
+      "connected_at": "2026-03-27T10:00:00Z"
+    }
+  ]
+}
+```
+
+### `POST /api/admin/composio/connect`
+
+Initiate an OAuth connection flow.
+
+**Request Body**:
+```json
+{"app": "gmail", "name": "Work Gmail", "instance_id": "agent-ava"}
+```
+
+`instance_id` is optional. When provided, the connection is auto-assigned to that instance. All connections use the gateway's `user_id` regardless.
+
+### `POST /api/admin/composio/sync`
+
+Sync connections from the Composio API into the local store. Only imports connections whose `user_id` matches the gateway prefix (`zcgw-` or `zcgw-{tenant}-`).
+
+### `DELETE /api/admin/composio/connections/{connection_id}`
+
+Delete a connection from the local store and Composio.
+
+## Integrations — Composio (Per-Instance)
+
+### `GET /api/instances/{id}/integrations/composio`
+
+Get Composio integration status for an instance. Only shows connections assigned to this instance.
+
+**Response** `200 OK`:
+```json
+{"enabled": true, "entity_id": "zcgw-gateway", "has_api_key": true, "has_gateway_api_key": true, "user_id": "zcgw-gateway", "connections": []}
 ```
 
 ### `PUT /api/instances/{id}/integrations/composio`
 
-Update Composio configuration.
+Update Composio configuration. Use `sync_gateway: true` to write the gateway API key, entity ID, and `connected_accounts` mappings to the instance config.
 
 **Request Body**:
 ```json
-{"enabled": true, "api_key": "...", "entity_id": "default"}
+{"enabled": true, "sync_gateway": true}
 ```
+
+When `sync_gateway` is set, the gateway writes:
+- `api_key` — the gateway's Composio API key
+- `entity_id` — the gateway's identity (e.g. `zcgw-gateway`)
+- `connected_accounts` — a map of toolkit slug to `connected_account_id` for all connections assigned to this instance
+
+### `POST /api/instances/{id}/integrations/composio/assign`
+
+Assign a gateway connection to this instance.
+
+**Request Body**:
+```json
+{"connection_id": "conn-abc123"}
+```
+
+### `DELETE /api/instances/{id}/integrations/composio/connections/{connection_id}`
+
+Unassign a connection from this instance.
+
+### `POST /api/instances/{id}/integrations/composio/mcp-sync`
+
+Create Composio-hosted MCP server entries for all toolkits assigned to this instance. Writes MCP server URLs to the instance config.
 
 ---
 

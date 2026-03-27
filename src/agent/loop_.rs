@@ -2942,6 +2942,15 @@ pub async fn run(
         tools_registry.extend(peripheral_tools);
     }
 
+    // ── MCP server tools ─────────────────────────────────────────
+    if !config.mcp_servers.is_empty() {
+        let mcp_tools = crate::tools::mcp_client::create_mcp_tools(&config.mcp_servers).await;
+        if !mcp_tools.is_empty() {
+            tracing::info!(count = mcp_tools.len(), "MCP tools loaded");
+            tools_registry.extend(mcp_tools);
+        }
+    }
+
     // ── Resolve provider ─────────────────────────────────────────
     let provider_name = provider_override
         .as_deref()
@@ -3434,6 +3443,12 @@ pub async fn process_message(
     let peripheral_tools: Vec<Box<dyn Tool>> =
         crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
     tools_registry.extend(peripheral_tools);
+
+    // MCP server tools
+    if !config.mcp_servers.is_empty() {
+        let mcp_tools = crate::tools::mcp_client::create_mcp_tools(&config.mcp_servers).await;
+        tools_registry.extend(mcp_tools);
+    }
 
     let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
     let model_name = config
