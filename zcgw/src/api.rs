@@ -328,6 +328,19 @@ pub async fn update_config(
         })?;
 
     let u = resp.into_inner();
+
+    // Persist the merged config to the host-level file so that container
+    // restarts / reconnections don't revert to the old values.
+    if let Ok(host_config) = read_agent_config(&state, &id).await {
+        if let Ok(mut host_json) = toml_value_to_json(&host_config) {
+            json_merge_patch(&mut host_json, &body.fields);
+            // Round-trip: JSON → TOML value tree → pretty TOML string.
+            if let Ok(merged_toml) = json_to_toml_value(&host_json) {
+                let _ = write_agent_config(&state, &id, &merged_toml).await;
+            }
+        }
+    }
+
     Ok(Json(serde_json::json!({
         "updated_fields": u.updated_fields,
         "requires_restart": u.requires_restart,
@@ -773,6 +786,36 @@ fn toml_value_to_json(val: &toml::Value) -> Result<serde_json::Value, ()> {
     // values are strings/numbers/bools/arrays/tables which round-trip fine.
     let json_str = serde_json::to_string(val).map_err(|_| ())?;
     serde_json::from_str(&json_str).map_err(|_| ())
+}
+
+/// Convert a serde_json::Value back to a toml::Value.
+fn json_to_toml_value(val: &serde_json::Value) -> Result<toml::Value, ()> {
+    let json_str = serde_json::to_string(val).map_err(|_| ())?;
+    serde_json::from_str(&json_str).map_err(|_| ())
+}
+
+/// RFC 7396 JSON Merge Patch: recursively merge `patch` into `target`.
+fn json_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    if let serde_json::Value::Object(patch_map) = patch {
+        if !target.is_object() {
+            *target = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let target_map = target.as_object_mut().unwrap();
+        for (key, value) in patch_map {
+            if value.is_null() {
+                target_map.remove(key);
+            } else if value.is_object() {
+                let entry = target_map
+                    .entry(key.clone())
+                    .or_insert(serde_json::Value::Object(serde_json::Map::new()));
+                json_merge_patch(entry, value);
+            } else {
+                target_map.insert(key.clone(), value.clone());
+            }
+        }
+    } else {
+        *target = patch.clone();
+    }
 }
 
 // ---------- Connectors ----------
