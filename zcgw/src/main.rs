@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| std::path::PathBuf::from("/etc/zcgw/workspace-templates"));
 
     let docker_config = docker::DockerConfig {
-        image: std::env::var("ZCGW_DOCKER_IMAGE").unwrap_or_else(|_| "zeroclaw:latest".into()),
+        image: std::env::var("ZCGW_DOCKER_IMAGE").unwrap_or_else(|_| "zeroclaw-agent".into()),
         network: std::env::var("ZCGW_DOCKER_NETWORK").unwrap_or_else(|_| "zeroclaw-net".into()),
         grpc_port: std::env::var("ZCGW_DOCKER_GRPC_PORT")
             .ok()

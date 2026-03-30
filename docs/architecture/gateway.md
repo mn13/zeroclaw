@@ -87,7 +87,7 @@ desired_state = "running"
 | `ZCGW_GRPC_SECRET` | _(empty)_ | Bearer token attached to gRPC calls to agent instances. |
 | `ZCGW_ENV_FILE` | _(auto)_ | Path to `.env` file. Falls back to `docker/.env` then `.env`. |
 | `ZCGW_HOST_MODE` | `true` | Set to `false` when gateway runs inside Docker. Controls how agent containers are addressed. |
-| `ZCGW_DOCKER_IMAGE` | `zeroclaw:latest` | Docker image used when creating new agent containers. |
+| `ZCGW_DOCKER_IMAGE` | `zeroclaw-agent` | Docker image used when creating new agent containers. |
 | `ZCGW_DOCKER_NETWORK` | `zeroclaw-net` | Docker network for inter-container communication. |
 | `ZCGW_DOCKER_GRPC_PORT` | `50051` | Internal gRPC port inside agent containers. |
 | `ZCGW_DOCKER_MEMORY_LIMIT` | `512m` | Memory limit for agent containers. |

@@ -40,11 +40,12 @@ Multi-stage build:
 
 ## Docker Compose
 
-The compose file (`docker/docker-compose.yml`) defines two services:
+The compose file (`docker/docker-compose.yml`) defines three services (gateway, web, and agent as a build-only target):
 
 ```yaml
 services:
   gateway:
+    image: zeroclaw-gateway
     build:
       context: ..
       dockerfile: docker/Dockerfile.zcgw
@@ -74,7 +75,16 @@ services:
         limits:
           memory: 256M
 
+  agent:
+    image: zeroclaw-agent
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.zc
+    profiles:
+      - build
+
   web:
+    image: zeroclaw-web
     build:
       context: ..
       dockerfile: docker/Dockerfile.web
@@ -89,7 +99,7 @@ services:
 ```
 
 Notes:
-- `ZCGW_DOCKER_IMAGE` is set to `zeroclaw-agent` here, overriding the code default of `zeroclaw:latest`. Similarly, `ZCGW_DOCKER_NETWORK` defaults to `docker_default` in compose, overriding the code default of `zeroclaw-net`.
+- `ZCGW_DOCKER_IMAGE` defaults to `zeroclaw-agent`, matching the image built by compose. `ZCGW_DOCKER_NETWORK` defaults to `docker_default` in compose, overriding the code default of `zeroclaw-net`.
 - `ZCGW_HOST_AGENTS_DIR` must be set to the host-side absolute path of the agents directory (needed for Docker bind mounts when the gateway itself runs inside Docker).
 - `OPENAI_API_KEY` is not explicitly listed in compose but is auto-forwarded by the gateway code if present in the environment.
 - Agent containers are **not** defined in compose — they are dynamically created and managed by the gateway at runtime via the Docker API.
