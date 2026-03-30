@@ -451,7 +451,10 @@ Composio connections are managed at the **gateway level** and assigned to indivi
 1. Create a connection via OAuth (`POST /api/admin/composio/connect`)
 2. Sync from Composio to populate the local store (`POST /api/admin/composio/sync`)
 3. Assign the connection to an instance (`POST /api/instances/{id}/integrations/composio/assign`)
-4. Sync gateway credentials to the instance (`PUT /api/instances/{id}/integrations/composio` with `sync_gateway: true`)
+4. Create MCP server entries for assigned toolkits (`POST /api/instances/{id}/integrations/composio/mcp-sync`)
+5. Sync gateway credentials to the instance config (`PUT /api/instances/{id}/integrations/composio` with `sync_gateway: true`)
+
+See [Composio Setup Guide](../setup-guides/composio-setup.md) for a step-by-step walkthrough.
 
 ### `GET /api/admin/composio/config`
 

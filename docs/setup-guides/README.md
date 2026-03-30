@@ -27,6 +27,10 @@ For first-time setup and quick orientation.
 - Ollama cloud models (`:cloud`) require a remote `api_url` and API key (for example `api_url = "https://ollama.com"`).
 - Validate environment: `zeroclaw status` + `zeroclaw doctor`
 
+## Integration Guides
+
+- [Composio Setup](composio-setup.md) — managed OAuth for 1000+ apps (Gmail, Slack, GitHub, etc.)
+
 ## Next
 
 - Runtime operations: [../ops/README.md](../ops/README.md)
