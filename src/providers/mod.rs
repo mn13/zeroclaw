@@ -75,6 +75,16 @@ const QWEN_OAUTH_CREDENTIAL_FILE: &str = ".qwen/oauth_creds.json";
 const ZAI_GLOBAL_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 const ZAI_CN_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 const VERCEL_AI_GATEWAY_BASE_URL: &str = "https://ai-gateway.vercel.sh/v1";
+const VENICE_BASE_URL_ENV: &str = "ZEROCLAW_VENICE_BASE_URL";
+const VENICE_DEFAULT_BASE_URL: &str = "https://api.venice.ai/api/v1";
+
+fn venice_base_url() -> String {
+    std::env::var(VENICE_BASE_URL_ENV)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| VENICE_DEFAULT_BASE_URL.to_string())
+}
 
 pub(crate) fn is_minimax_intl_alias(name: &str) -> bool {
     matches!(
@@ -1083,7 +1093,7 @@ fn create_provider_with_url_and_options(
 
         // ── OpenAI-compatible providers ──────────────────────
         "venice" => Ok(compat(OpenAiCompatibleProvider::new(
-            "Venice", "https://api.venice.ai/api/v1", key, AuthStyle::Bearer,
+            "Venice", &venice_base_url(), key, AuthStyle::Bearer,
         ))),
         "vercel" | "vercel-ai" => Ok(compat(OpenAiCompatibleProvider::new(
             "Vercel AI Gateway",
