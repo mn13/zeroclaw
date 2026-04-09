@@ -102,12 +102,13 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    // Auto-forward well-known API key env vars to new containers
+    // Auto-forward well-known env vars to new containers
     for key in &[
         "VENICE_API_KEY",
         "OPENROUTER_API_KEY",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+        "ZEROCLAW_VENICE_BASE_URL",
     ] {
         if !docker_env_vars.contains_key(*key) {
             if let Ok(val) = std::env::var(key) {
