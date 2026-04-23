@@ -3829,6 +3829,30 @@ fn agent_skills_dir(state: &AppState, id: &str) -> std::path::PathBuf {
     agent_workspace_dir(state, id).join("skills")
 }
 
+/// Sanitize a skill pack id / file name: reject empty, path separators, or
+/// parent-dir escapes. Returns the id stripped of any trailing `.md` so
+/// legacy callers that PUT "my-skill.md" still target the same directory.
+fn sanitize_skill_id(name: &str) -> Result<String, StatusCode> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(name
+        .strip_suffix(".md")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| name.to_string()))
+}
+
+fn sanitize_skill_filename(name: &str) -> Result<String, StatusCode> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    // Only markdown / toml files are allowed as skill sources today.
+    if !(name.ends_with(".md") || name.ends_with(".toml")) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(name.to_string())
+}
+
 pub async fn list_skills(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -3845,9 +3869,59 @@ pub async fn list_skills(
     let mut skills = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".md") {
-            if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
-                skills.push(serde_json::json!({ "name": name, "content": content }));
+        let path = entry.path();
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if metadata.is_dir() {
+            // Modern open-skills layout: skills/<name>/SKILL.{md,toml}.
+            let mut files = Vec::new();
+            if let Ok(mut dir_entries) = tokio::fs::read_dir(&path).await {
+                while let Ok(Some(file_entry)) = dir_entries.next_entry().await {
+                    let file_name = file_entry.file_name().to_string_lossy().to_string();
+                    if !(file_name.ends_with(".md") || file_name.ends_with(".toml")) {
+                        continue;
+                    }
+                    if let Ok(content) = tokio::fs::read_to_string(file_entry.path()).await {
+                        files.push(serde_json::json!({
+                            "filename": file_name,
+                            "content": content,
+                        }));
+                    }
+                }
+            }
+            files.sort_by(|a, b| {
+                a["filename"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["filename"].as_str().unwrap_or(""))
+            });
+            // Surface the primary SKILL.md content on the top-level object
+            // so legacy clients that expected a flat `content` field keep
+            // working.
+            let primary_content = files
+                .iter()
+                .find(|f| f["filename"].as_str() == Some("SKILL.md"))
+                .and_then(|f| f["content"].as_str())
+                .unwrap_or("")
+                .to_string();
+            skills.push(serde_json::json!({
+                "name": name,
+                "content": primary_content,
+                "files": files,
+            }));
+        } else if metadata.is_file() && name.ends_with(".md") {
+            // Legacy flat file fallback. Keep reading so old workspaces still
+            // show up, but the agent-side loader ignores these.
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                skills.push(serde_json::json!({
+                    "name": name,
+                    "content": content,
+                    "files": [],
+                    "legacy_flat": true,
+                }));
             }
         }
     }
@@ -3863,8 +3937,20 @@ pub async fn list_skills(
 }
 
 #[derive(Deserialize)]
-pub struct UpdateSkillBody {
+pub struct SkillFile {
+    filename: String,
     content: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateSkillBody {
+    /// Multi-file form: `[{filename: "SKILL.md", content: "..."}, ...]`.
+    /// When present, each entry is written to `skills/<name>/<filename>`.
+    #[serde(default)]
+    files: Option<Vec<SkillFile>>,
+    /// Legacy single-file form: written to `skills/<name>/SKILL.md`.
+    #[serde(default)]
+    content: Option<String>,
 }
 
 pub async fn update_skill(
@@ -3872,31 +3958,70 @@ pub async fn update_skill(
     Path((id, name)): Path<(String, String)>,
     Json(body): Json<UpdateSkillBody>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !name.ends_with(".md") || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let skill_id = sanitize_skill_id(&name)?;
     let skills_dir = agent_skills_dir(&state, &id);
-    tokio::fs::create_dir_all(&skills_dir)
+    let skill_dir = skills_dir.join(&skill_id);
+    tokio::fs::create_dir_all(&skill_dir)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let path = skills_dir.join(&name);
-    tokio::fs::write(&path, &body.content)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+
+    // Clean up any stale legacy flat file (`skills/<name>.md`) that would
+    // otherwise shadow the directory layout when loaded by older clients.
+    let legacy = skills_dir.join(format!("{}.md", skill_id));
+    let _ = tokio::fs::remove_file(&legacy).await;
+
+    let files = match body.files {
+        Some(files) if !files.is_empty() => files,
+        _ => {
+            let content = body.content.unwrap_or_default();
+            vec![SkillFile {
+                filename: "SKILL.md".to_string(),
+                content,
+            }]
+        }
+    };
+
+    let mut written = Vec::with_capacity(files.len());
+    for file in files {
+        let safe_name = sanitize_skill_filename(&file.filename)?;
+        let path = skill_dir.join(&safe_name);
+        tokio::fs::write(&path, &file.content)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        written.push(safe_name);
+    }
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "name": skill_id,
+        "files": written,
+    })))
 }
 
 pub async fn delete_skill(
     State(state): State<AppState>,
     Path((id, name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !name.ends_with(".md") || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(StatusCode::BAD_REQUEST);
+    let skill_id = sanitize_skill_id(&name)?;
+    let skills_dir = agent_skills_dir(&state, &id);
+    let dir_path = skills_dir.join(&skill_id);
+    let legacy_path = skills_dir.join(format!("{}.md", skill_id));
+
+    let mut removed = false;
+    if tokio::fs::metadata(&dir_path).await.is_ok() {
+        tokio::fs::remove_dir_all(&dir_path)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        removed = true;
     }
-    let path = agent_skills_dir(&state, &id).join(&name);
-    tokio::fs::remove_file(&path)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    if tokio::fs::metadata(&legacy_path).await.is_ok() {
+        let _ = tokio::fs::remove_file(&legacy_path).await;
+        removed = true;
+    }
+
+    if !removed {
+        return Err(StatusCode::NOT_FOUND);
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
