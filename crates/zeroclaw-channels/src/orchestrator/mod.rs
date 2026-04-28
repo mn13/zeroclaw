@@ -3041,6 +3041,7 @@ async fn process_channel_message(
                 );
             }
         }
+        let elapsed_ms = started_at.elapsed().as_millis();
         runtime_trace::record_event(
             "channel_message_no_reply",
             Some(msg.channel.as_str()),
@@ -3051,14 +3052,28 @@ async fn process_channel_message(
             reason.as_deref(),
             serde_json::json!({
                 "sender": msg.sender,
-                "elapsed_ms": started_at.elapsed().as_millis(),
+                "elapsed_ms": elapsed_ms,
                 "phase": "precheck",
                 "kind": format!("{kind:?}"),
             }),
         );
+        if let Some(channel) = target_channel.as_ref()
+            && let Err(err) = channel
+                .notify_no_reply(
+                    msg.reply_target.as_str(),
+                    msg.thread_ts.as_deref(),
+                    reason.as_deref(),
+                    u64::try_from(elapsed_ms).unwrap_or(u64::MAX),
+                )
+                .await
+        {
+            tracing::warn!(
+                channel = %msg.channel,
+                "no_reply notification failed: {err}"
+            );
+        }
         println!(
-            "  🤖 No reply [{kind:?}] ({}ms): {}",
-            started_at.elapsed().as_millis(),
+            "  🤖 No reply [{kind:?}] ({elapsed_ms}ms): {}",
             reason.as_deref().unwrap_or("no reason provided")
         );
         return;
