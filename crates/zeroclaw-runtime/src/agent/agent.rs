@@ -475,8 +475,7 @@ impl Agent {
         session_cwd: Option<&Path>,
         initialize_mcp: bool,
     ) -> Result<Self> {
-        let observer: Arc<dyn Observer> =
-            Arc::from(observability::create_observer(&config.observability));
+        let observer: Arc<dyn Observer> = observability::shared_observer(&config.observability);
         let runtime: Arc<dyn platform::RuntimeAdapter> =
             Arc::from(platform::create_runtime(&config.runtime)?);
         let security = Arc::new(SecurityPolicy::from_config(
