@@ -237,15 +237,15 @@ pub trait Channel: Send + Sync {
     /// Notify the channel that the orchestrator decided not to send a visible reply.
     ///
     /// Channels that surface a callback to an external API caller (e.g. the
-    /// generic webhook channel) should override this to deliver a structured
-    /// status payload so downstream consumers can distinguish "processed but
-    /// silent" from "still in-flight / dropped". Default is a no-op.
+    /// generic webhook channel) should override this so downstream consumers
+    /// can distinguish "processed but silent" from "still in-flight / dropped"
+    /// instead of timing out. Default is a no-op so chat channels (Telegram,
+    /// Slack, Discord, …) don't post the reason text as a bot message.
     async fn notify_no_reply(
         &self,
         _reply_target: &str,
         _thread_ts: Option<&str>,
         _reason: Option<&str>,
-        _elapsed_ms: u64,
     ) -> anyhow::Result<()> {
         Ok(())
     }

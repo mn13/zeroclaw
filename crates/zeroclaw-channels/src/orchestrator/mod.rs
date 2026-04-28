@@ -3063,7 +3063,6 @@ async fn process_channel_message(
                     msg.reply_target.as_str(),
                     msg.thread_ts.as_deref(),
                     reason.as_deref(),
-                    u64::try_from(elapsed_ms).unwrap_or(u64::MAX),
                 )
                 .await
         {

@@ -38,22 +38,6 @@ struct OutgoingWebhook {
     recipient: Option<String>,
 }
 
-/// Outgoing webhook payload for status notifications (e.g. "no_reply").
-///
-/// Distinct from [`OutgoingWebhook`] so consumers can branch on the presence
-/// of `status` instead of probing for an empty `content`.
-#[derive(Debug, Serialize)]
-struct OutgoingWebhookStatus {
-    status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    elapsed_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thread_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recipient: Option<String>,
-}
-
 impl WebhookChannel {
     pub fn new(
         listen_port: u16,
@@ -185,56 +169,15 @@ impl Channel for WebhookChannel {
         reply_target: &str,
         thread_ts: Option<&str>,
         reason: Option<&str>,
-        elapsed_ms: u64,
     ) -> Result<()> {
-        let Some(ref send_url) = self.send_url else {
-            tracing::debug!(
-                "Webhook channel: no send_url configured, skipping no_reply notification"
-            );
-            return Ok(());
-        };
-
-        let client = self.http_client();
-        let payload = OutgoingWebhookStatus {
-            status: "no_reply",
-            reason: reason.map(str::to_string),
-            elapsed_ms,
-            thread_id: thread_ts.map(str::to_string),
-            recipient: if reply_target.is_empty() {
-                None
-            } else {
-                Some(reply_target.to_string())
-            },
-        };
-
-        let mut request = match self.send_method.as_str() {
-            "PUT" => client.put(send_url),
-            _ => client.post(send_url),
-        };
-
-        if let Some(ref auth) = self.auth_header {
-            request = request.header("Authorization", auth);
-        }
-
-        let resp = request.json(&payload).send().await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<failed to read response: {e}>"));
-            bail!("Webhook no_reply notification failed ({status}): {body}");
-        }
-
-        if let Some(ref obs) = self.observer {
-            obs.record_event(&ObserverEvent::ChannelMessage {
-                channel: "webhook".into(),
-                direction: "outbound".into(),
-            });
-        }
-
-        Ok(())
+        // Reuse the regular reply payload so we don't introduce a second schema
+        // for the receiver. The reason text becomes `content`; downstream that
+        // only renders `content` simply shows the reason ("Statement of fact
+        // not addressed to the assistant"), which is informative enough to
+        // distinguish from a real reply or a dropped request.
+        let content = reason.unwrap_or("(no reply)").to_string();
+        let message = SendMessage::new(content, reply_target).in_thread(thread_ts.map(str::to_string));
+        self.send(&message).await
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> Result<()> {
@@ -512,61 +455,22 @@ mod tests {
         assert!(!ch.verify_signature(b"body", Some("badhex")));
     }
 
-    #[test]
-    fn outgoing_status_payload_serializes() {
-        let payload = OutgoingWebhookStatus {
-            status: "no_reply",
-            reason: Some("Statement of fact not addressed to the assistant".into()),
-            elapsed_ms: 2423,
-            thread_id: Some("t1".into()),
-            recipient: Some("user-uuid".into()),
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["status"], "no_reply");
-        assert_eq!(
-            json["reason"],
-            "Statement of fact not addressed to the assistant"
-        );
-        assert_eq!(json["elapsed_ms"], 2423);
-        assert_eq!(json["thread_id"], "t1");
-        assert_eq!(json["recipient"], "user-uuid");
-    }
-
-    #[test]
-    fn outgoing_status_payload_omits_none_fields() {
-        let payload = OutgoingWebhookStatus {
-            status: "no_reply",
-            reason: None,
-            elapsed_ms: 0,
-            thread_id: None,
-            recipient: None,
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["status"], "no_reply");
-        assert_eq!(json["elapsed_ms"], 0);
-        assert!(json.get("reason").is_none());
-        assert!(json.get("thread_id").is_none());
-        assert!(json.get("recipient").is_none());
-    }
-
     #[tokio::test]
     async fn notify_no_reply_skips_when_no_send_url_configured() {
         let ch = WebhookChannel::new(8080, None, None, None, None, None);
-        ch.notify_no_reply("user-1", Some("t1"), Some("statement of fact"), 1234)
+        ch.notify_no_reply("user-1", Some("t1"), Some("statement of fact"))
             .await
             .expect("notify_no_reply should be a no-op when send_url is unset");
     }
 
     #[tokio::test]
-    async fn notify_no_reply_posts_status_payload_to_send_url() {
+    async fn notify_no_reply_posts_reason_as_content() {
         use wiremock::matchers::{body_json, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         let expected_body = serde_json::json!({
-            "status": "no_reply",
-            "reason": "Statement of fact not addressed to the assistant",
-            "elapsed_ms": 2423,
+            "content": "Statement of fact not addressed to the assistant",
             "thread_id": "t1",
             "recipient": "user-1"
         });
@@ -592,9 +496,41 @@ mod tests {
             "user-1",
             Some("t1"),
             Some("Statement of fact not addressed to the assistant"),
-            2423,
         )
         .await
         .expect("notify_no_reply should succeed");
+    }
+
+    #[tokio::test]
+    async fn notify_no_reply_falls_back_when_reason_missing() {
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let expected_body = serde_json::json!({
+            "content": "(no reply)",
+            "recipient": "user-1"
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/callback"))
+            .and(body_json(&expected_body))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ch = WebhookChannel::new(
+            0,
+            None,
+            Some(format!("{}/callback", server.uri())),
+            None,
+            None,
+            None,
+        );
+
+        ch.notify_no_reply("user-1", None, None)
+            .await
+            .expect("notify_no_reply should succeed with default reason");
     }
 }
