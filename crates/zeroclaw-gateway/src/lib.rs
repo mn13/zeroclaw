@@ -946,10 +946,13 @@ pub async fn run_gateway(
         hooks.fire_gateway_start(host, actual_port).await;
     }
 
-    // Wrap observer with broadcast capability for SSE
+    // Wrap shared observer with broadcast capability for SSE.
+    // `shared_observer` returns the same Arc across subsystems so that metrics
+    // recorded by the channels orchestrator (e.g. WebhookChannel inbound) show
+    // up in this gateway's `/metrics` endpoint.
     let broadcast_observer: Arc<dyn zeroclaw_runtime::observability::Observer> =
         Arc::new(sse::BroadcastObserver::new(
-            zeroclaw_runtime::observability::create_observer(&config.observability),
+            zeroclaw_runtime::observability::shared_observer(&config.observability),
             event_tx.clone(),
             event_buffer.clone(),
         ));
@@ -2801,7 +2804,7 @@ mod tests {
         let event_tx = tokio::sync::broadcast::channel(16).0;
         let event_buffer = Arc::new(sse::EventBuffer::new(16));
         let wrapped = sse::BroadcastObserver::new(
-            Box::new(zeroclaw_runtime::observability::PrometheusObserver::new()),
+            Arc::new(zeroclaw_runtime::observability::PrometheusObserver::new()),
             event_tx.clone(),
             event_buffer,
         );

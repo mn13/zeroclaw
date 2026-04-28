@@ -23,7 +23,27 @@ pub use traits::{Observer, ObserverEvent};
 #[allow(unused_imports)]
 pub use verbose::VerboseObserver;
 
+use std::sync::{Arc, OnceLock};
+
 use zeroclaw_config::schema::ObservabilityConfig;
+
+/// Process-wide shared observer.
+///
+/// Subsystems (gateway, channels orchestrator, etc.) all need to record into the
+/// **same** registry so that metrics emitted by one are visible at the `/metrics`
+/// endpoint exposed by another. Without sharing, each subsystem builds its own
+/// `PrometheusObserver` with a separate registry and counters silently bypass
+/// the scraper. Use this factory instead of [`create_observer`] for any
+/// long-lived component that participates in metrics collection.
+///
+/// The first call wins: the backend is fixed for the lifetime of the process.
+/// Tests that need isolated observers should keep using [`create_observer`].
+pub fn shared_observer(config: &ObservabilityConfig) -> Arc<dyn Observer> {
+    static SHARED: OnceLock<Arc<dyn Observer>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| Arc::from(create_observer(config)))
+        .clone()
+}
 
 /// Factory: create the right observer from config
 pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
