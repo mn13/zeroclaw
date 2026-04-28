@@ -365,8 +365,7 @@ impl Agent {
     }
 
     pub async fn from_config(config: &Config) -> Result<Self> {
-        let observer: Arc<dyn Observer> =
-            Arc::from(observability::create_observer(&config.observability));
+        let observer: Arc<dyn Observer> = observability::shared_observer(&config.observability);
         let runtime: Arc<dyn platform::RuntimeAdapter> =
             Arc::from(platform::create_runtime(&config.runtime)?);
         let security = Arc::new(SecurityPolicy::from_config(
