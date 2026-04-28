@@ -3249,6 +3249,14 @@ async fn process_channel_message(
             collector: std::sync::Arc::clone(&tool_receipts_collector),
         }
     });
+
+    // Top-level agent invocation marker for /metrics. AgentEnd is emitted after
+    // the tool loop returns; an extra AgentStart fires on mid-run model switch
+    // (see below) but only one AgentEnd will be recorded per channel message.
+    ctx.observer.record_event(&ObserverEvent::AgentStart {
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+    });
     let (llm_result, fallback_info) = scope_provider_fallback(async {
         let llm_result = loop {
             let loop_result = tokio::select! {
@@ -3382,6 +3390,14 @@ async fn process_channel_message(
     #[allow(clippy::cast_possible_truncation)]
     let total_ms = started_at.elapsed().as_millis() as u64;
     tracing::info!(llm_call_ms, total_ms, "⏱ LLM call completed");
+
+    ctx.observer.record_event(&ObserverEvent::AgentEnd {
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+        duration: started_at.elapsed(),
+        tokens_used: None,
+        cost_usd: None,
+    });
 
     if let Some(token) = typing_cancellation.as_ref() {
         token.cancel();
