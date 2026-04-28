@@ -103,14 +103,14 @@ pub async fn handle_events_history(
 
 /// Broadcast observer that forwards events to the SSE broadcast channel.
 pub struct BroadcastObserver {
-    inner: Box<dyn zeroclaw_runtime::observability::Observer>,
+    inner: Arc<dyn zeroclaw_runtime::observability::Observer>,
     tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     buffer: Arc<EventBuffer>,
 }
 
 impl BroadcastObserver {
     pub fn new(
-        inner: Box<dyn zeroclaw_runtime::observability::Observer>,
+        inner: Arc<dyn zeroclaw_runtime::observability::Observer>,
         tx: tokio::sync::broadcast::Sender<serde_json::Value>,
         buffer: Arc<EventBuffer>,
     ) -> Self {

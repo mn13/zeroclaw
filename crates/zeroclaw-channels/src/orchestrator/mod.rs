@@ -5143,14 +5143,17 @@ fn collect_configured_channels(
         if wh.enabled {
             channels.push(ConfiguredChannel {
                 display_name: "Webhook",
-                channel: Arc::new(WebhookChannel::new(
-                    wh.port,
-                    wh.listen_path.clone(),
-                    wh.send_url.clone(),
-                    wh.send_method.clone(),
-                    wh.auth_header.clone(),
-                    wh.secret.clone(),
-                )),
+                channel: Arc::new(
+                    WebhookChannel::new(
+                        wh.port,
+                        wh.listen_path.clone(),
+                        wh.send_url.clone(),
+                        wh.send_method.clone(),
+                        wh.auth_header.clone(),
+                        wh.secret.clone(),
+                    )
+                    .with_observer(observability::shared_observer(&config.observability)),
+                ),
             });
         } else {
             tracing::info!("Webhook channel configured but disabled (enabled = false)");
@@ -5263,8 +5266,10 @@ pub async fn start_channels(config: Config) -> Result<()> {
         );
     }
 
-    let observer: Arc<dyn Observer> =
-        Arc::from(observability::create_observer(&config.observability));
+    // Use the process-wide shared observer so metrics recorded here (channel
+    // messages, agent starts, tool calls) reach the same registry exposed by
+    // the gateway's `/metrics` endpoint.
+    let observer: Arc<dyn Observer> = observability::shared_observer(&config.observability);
     let runtime: Arc<dyn platform::RuntimeAdapter> =
         Arc::from(platform::create_runtime(&config.runtime)?);
     let security = Arc::new(SecurityPolicy::from_config(

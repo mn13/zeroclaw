@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
+use zeroclaw_runtime::observability::{Observer, ObserverEvent};
 
 /// Generic Webhook channel — receives messages via HTTP POST and sends replies
 /// to a configurable outbound URL. This is the "universal adapter" for any system
@@ -13,6 +16,7 @@ pub struct WebhookChannel {
     send_method: String,
     auth_header: Option<String>,
     secret: Option<String>,
+    observer: Option<Arc<dyn Observer>>,
 }
 
 /// Incoming webhook payload format.
@@ -60,7 +64,16 @@ impl WebhookChannel {
                 .to_uppercase(),
             auth_header,
             secret,
+            observer: None,
         }
+    }
+
+    /// Attach an observer so inbound and outbound webhook messages are recorded
+    /// as `zeroclaw_channel_messages_total{channel="webhook",direction=...}`.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     fn http_client(&self) -> reqwest::Client {
@@ -141,6 +154,13 @@ impl Channel for WebhookChannel {
             bail!("Webhook send failed ({status}): {body}");
         }
 
+        if let Some(ref obs) = self.observer {
+            obs.record_event(&ObserverEvent::ChannelMessage {
+                channel: "webhook".into(),
+                direction: "outbound".into(),
+            });
+        }
+
         Ok(())
     }
 
@@ -161,12 +181,14 @@ impl Channel for WebhookChannel {
             tx: tokio::sync::mpsc::Sender<ChannelMessage>,
             secret: Option<String>,
             counter: Arc<AtomicU64>,
+            observer: Option<Arc<dyn Observer>>,
         }
 
         let state = Arc::new(WebhookState {
             tx: tx.clone(),
             secret: self.secret.clone(),
             counter: counter.clone(),
+            observer: self.observer.clone(),
         });
 
         let listen_path = self.listen_path.clone();
@@ -244,6 +266,13 @@ impl Channel for WebhookChannel {
 
             if state.tx.send(msg).await.is_err() {
                 return StatusCode::SERVICE_UNAVAILABLE;
+            }
+
+            if let Some(ref obs) = state.observer {
+                obs.record_event(&ObserverEvent::ChannelMessage {
+                    channel: "webhook".into(),
+                    direction: "inbound".into(),
+                });
             }
 
             StatusCode::OK
