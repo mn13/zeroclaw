@@ -1,15 +1,15 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { App } from "./App";
-import { applyTheme } from "./theme";
-import "./styles.css";
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import { basePath } from './lib/basePath';
+import './index.css';
 
-// Apply saved theme or default to dark
-const saved = localStorage.getItem("zcgw-theme") as "dark" | "light" | null;
-applyTheme(saved ?? "dark");
-
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    {/* basePath is injected by the Rust gateway at serve time for reverse-proxy prefix support. */}
+    <BrowserRouter basename={basePath || '/'}>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>
 );

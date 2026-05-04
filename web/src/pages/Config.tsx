@@ -1,598 +1,119 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { getConfig, updateConfig } from "../api";
-import { clipCorner } from "../theme";
+import {
+  Settings,
+  Save,
+  CheckCircle,
+  AlertTriangle,
+  ShieldAlert,
+  Code,
+  SlidersHorizontal,
+} from 'lucide-react';
+import { t } from '@/lib/i18n';
+import { useConfigState } from './config/useConfigState';
+import ConfigFormView from './config/ConfigFormView';
+import ConfigTomlEditor from './config/ConfigTomlEditor';
 
-interface Props {
-  instanceId: string;
-  toast: (msg: string, isError?: boolean) => void;
-}
+export default function Config() {
+  const {
+    parsedConfig,
+    rawToml,
+    mode,
+    loading,
+    saving,
+    error,
+    success,
+    parseError,
+    updateField,
+    switchMode,
+    updateRawToml,
+    save,
+  } = useConfigState();
 
-type ConfigValue = unknown;
-type ConfigData = Record<string, ConfigValue>;
-type SaveStatus = null | "saving" | "deployed" | "verifying" | "confirmed" | "error";
-
-function deepClone<T>(obj: T): T {
-  return JSON.parse(JSON.stringify(obj));
-}
-
-function isSensitiveKey(key: string): boolean {
-  const lower = key.toLowerCase();
-  return (
-    lower.includes("key") ||
-    lower.includes("token") ||
-    lower.includes("secret") ||
-    lower.includes("password")
-  );
-}
-
-/** Sections shown by default — everything else goes under "Advanced". */
-const PRIMARY_SECTIONS = new Set([
-  "default_provider",
-  "default_model",
-  "default_temperature",
-  "provider_timeout_secs",
-  "model_routes",
-  "embedding_routes",
-  "model_providers",
-  "memory",
-  "agent",
-  "autonomy",
-  "cron",
-  "secrets",
-]);
-
-export default function Config({ instanceId, toast }: Props) {
-  const [savedConfig, setSavedConfig] = useState<ConfigData | null>(null);
-  const [draft, setDraft] = useState<ConfigData | null>(null);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  const dirty = useMemo(() => {
-    if (!draft || !savedConfig) return false;
-    return JSON.stringify(draft) !== JSON.stringify(savedConfig);
-  }, [draft, savedConfig]);
-
-  const loadConfig = useCallback(() => {
-    setLoading(true);
-    getConfig(instanceId)
-      .then((data) => {
-        const cloned = deepClone(data);
-        setSavedConfig(cloned);
-        setDraft(deepClone(cloned));
-      })
-      .catch((err) => toast(err.message, true))
-      .finally(() => setLoading(false));
-  }, [instanceId, toast]);
-
-  useEffect(() => {
-    loadConfig();
-  }, [loadConfig]);
-
-  const toggleSection = useCallback((key: string) => {
-    setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
-  }, []);
-
-  const updateField = useCallback(
-    (path: string[], value: ConfigValue) => {
-      setDraft((prev) => {
-        if (!prev) return prev;
-        const next = deepClone(prev);
-        let cursor: Record<string, ConfigValue> = next;
-        for (let i = 0; i < path.length - 1; i++) {
-          const key = path[i]!;
-          cursor = cursor[key] as Record<string, ConfigValue>;
-        }
-        const lastKey = path[path.length - 1]!;
-        cursor[lastKey] = value;
-        return next;
-      });
-    },
-    [],
-  );
-
-  const handleSave = useCallback(async () => {
-    if (!draft || saving) return;
-    setSaving(true);
-    setSaveStatus("saving");
-    try {
-      const result = await updateConfig(instanceId, draft);
-      const msg =
-        `Updated ${result.updated_fields.length} field(s)` +
-        (result.requires_restart ? " — restart required" : "");
-      toast(msg);
-      setSavedConfig(deepClone(draft));
-      setSaveStatus("deployed");
-
-      // Verify by reloading config
-      setSaveStatus("verifying");
-      const reloaded = await getConfig(instanceId);
-      const cloned = deepClone(reloaded);
-      setSavedConfig(cloned);
-      setDraft(deepClone(cloned));
-      setSaveStatus("confirmed");
-
-      setTimeout(() => {
-        setSaveStatus(null);
-      }, 3000);
-    } catch (err: unknown) {
-      toast(err instanceof Error ? err.message : "Save failed", true);
-      setSaveStatus("error");
-      setTimeout(() => {
-        setSaveStatus(null);
-      }, 3000);
-    } finally {
-      setSaving(false);
-    }
-  }, [instanceId, draft, saving, toast]);
-
-  const renderField = (
-    key: string,
-    value: ConfigValue,
-    path: string[],
-    depth: number,
-  ): React.ReactNode => {
-    const fullPath = [...path, key];
-    const labelStyle: React.CSSProperties = {
-      fontFamily: "Outfit, sans-serif",
-      fontSize: 13,
-      color: "var(--text-dim)",
-      minWidth: 180,
-      flexShrink: 0,
-    };
-    const rowStyle: React.CSSProperties = {
-      display: "flex",
-      alignItems: "center",
-      gap: 12,
-      padding: "6px 0",
-      marginLeft: depth * 16,
-    };
-    const inputStyle: React.CSSProperties = {
-      fontFamily: "JetBrains Mono, monospace",
-      fontSize: 13,
-      background: "var(--bg-input)",
-      border: "1px solid var(--border)",
-      color: "var(--text-primary)",
-      padding: "5px 8px",
-      borderRadius: 0,
-      clipPath: clipCorner(6),
-      outline: "none",
-      flex: 1,
-    };
-
-    if (typeof value === "boolean") {
-      return (
-        <div key={key} style={rowStyle}>
-          <span style={labelStyle}>{key}</span>
-          <div
-            onClick={() => updateField(fullPath, !value)}
-            style={{
-              width: 40,
-              height: 22,
-              borderRadius: 11,
-              background: value ? "var(--amber)" : "var(--toggle-off)",
-              position: "relative",
-              cursor: "pointer",
-              transition: "background 0.2s",
-            }}
-          >
-            <div
-              style={{
-                width: 16,
-                height: 16,
-                borderRadius: "50%",
-                background: "#fff",
-                position: "absolute",
-                top: 3,
-                left: value ? 21 : 3,
-                transition: "left 0.2s",
-              }}
-            />
-          </div>
-        </div>
-      );
-    }
-
-    if (typeof value === "number") {
-      return (
-        <div key={key} style={rowStyle}>
-          <span style={labelStyle}>{key}</span>
-          <input
-            type="number"
-            value={value}
-            onChange={(e) => updateField(fullPath, Number(e.target.value))}
-            style={{ ...inputStyle, maxWidth: 120 }}
-          />
-        </div>
-      );
-    }
-
-    if (Array.isArray(value)) {
-      const hasObjects = value.some(
-        (v) => typeof v === "object" && v !== null,
-      );
-      if (hasObjects) {
-        return (
-          <div key={key} style={{ marginLeft: depth * 16, marginTop: 4 }}>
-            <span style={labelStyle}>{key}</span>
-            <textarea
-              value={JSON.stringify(value, null, 2)}
-              onChange={(e) => {
-                try {
-                  updateField(fullPath, JSON.parse(e.target.value));
-                } catch {
-                  /* ignore invalid JSON while typing */
-                }
-              }}
-              style={{
-                ...inputStyle,
-                marginTop: 4,
-                minHeight: 80,
-                resize: "vertical",
-                display: "block",
-                width: "100%",
-              }}
-            />
-          </div>
-        );
-      }
-      return (
-        <div key={key} style={rowStyle}>
-          <span style={labelStyle}>{key}</span>
-          <input
-            type="text"
-            value={value.join(", ")}
-            onChange={(e) =>
-              updateField(
-                fullPath,
-                e.target.value.split(",").map((s) => s.trim()),
-              )
-            }
-            style={inputStyle}
-          />
-        </div>
-      );
-    }
-
-    if (typeof value === "object" && value !== null) {
-      const obj = value as Record<string, ConfigValue>;
-      return (
-        <div key={key} style={{ marginLeft: depth * 16, marginTop: 4 }}>
-          <div
-            style={{
-              fontFamily: "Outfit, sans-serif",
-              fontSize: 13,
-              color: "var(--text-dim)",
-              fontWeight: 600,
-              marginBottom: 4,
-            }}
-          >
-            {key}
-          </div>
-          {Object.entries(obj).map(([k, v]) =>
-            renderField(k, v, fullPath, depth + 1),
-          )}
-        </div>
-      );
-    }
-
-    // string or fallback
-    const strVal = value == null ? "" : String(value);
-
-    // Render default_model as a dropdown when model_routes are available
-    if (key === "default_model" && draft) {
-      const routes = draft.model_routes as Array<{ hint: string; provider: string; model: string }> | undefined;
-      if (routes && routes.length > 0) {
-        const models = routes.map((r) => r.model);
-        // Include the current value if it's not in routes
-        if (strVal && !models.includes(strVal)) models.unshift(strVal);
-        return (
-          <div key={key} style={rowStyle}>
-            <span style={labelStyle}>{key}</span>
-            <select
-              value={strVal}
-              onChange={(e) => {
-                const newModel = e.target.value;
-                updateField(fullPath, newModel);
-                // Also update default_provider to match the route's provider
-                const route = routes.find((r) => r.model === newModel);
-                if (route) updateField(["default_provider"], route.provider);
-              }}
-              style={{ ...inputStyle, cursor: "pointer" }}
-            >
-              {models.map((m) => {
-                const route = routes.find((r) => r.model === m);
-                return (
-                  <option key={m} value={m}>
-                    {m}{route ? ` (${route.hint})` : ""}
-                  </option>
-                );
-              })}
-            </select>
-          </div>
-        );
-      }
-    }
-
-    // Render default_provider as a dropdown when model_routes are available
-    if (key === "default_provider" && draft) {
-      const routes = draft.model_routes as Array<{ provider: string }> | undefined;
-      if (routes && routes.length > 0) {
-        const providers = [...new Set(routes.map((r) => r.provider))];
-        if (strVal && !providers.includes(strVal)) providers.unshift(strVal);
-        return (
-          <div key={key} style={rowStyle}>
-            <span style={labelStyle}>{key}</span>
-            <select
-              value={strVal}
-              onChange={(e) => updateField(fullPath, e.target.value)}
-              style={{ ...inputStyle, cursor: "pointer" }}
-            >
-              {providers.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </div>
-        );
-      }
-    }
-
+  if (loading) {
     return (
-      <div key={key} style={rowStyle}>
-        <span style={labelStyle}>{key}</span>
-        <input
-          type={isSensitiveKey(key) ? "password" : "text"}
-          value={strVal}
-          onChange={(e) => updateField(fullPath, e.target.value)}
-          style={inputStyle}
-        />
-      </div>
-    );
-  };
-
-  if (loading || !draft) {
-    return (
-      <div
-        style={{
-          padding: 32,
-          color: "var(--text-dim)",
-          fontFamily: "Outfit, sans-serif",
-          fontSize: 14,
-        }}
-      >
-        Loading configuration...
+      <div className="flex items-center justify-center h-64">
+        <div className="h-8 w-8 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--pc-border)', borderTopColor: 'var(--pc-accent)' }} />
       </div>
     );
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 900, flex: 1, overflowY: "auto" }}>
-      <h2
-        style={{
-          fontFamily: "Syne, sans-serif",
-          fontSize: 18,
-          fontWeight: 700,
-          color: "var(--amber)",
-          marginBottom: 20,
-          textTransform: "uppercase",
-          letterSpacing: 1,
-        }}
-      >
-        Configuration
-      </h2>
-
-      {(() => {
-        const entries = Object.entries(draft);
-        const primaryEntries = entries.filter(([key]) => PRIMARY_SECTIONS.has(key));
-        const advancedEntries = entries.filter(([key]) => !PRIMARY_SECTIONS.has(key));
-
-        const renderSection = ([sectionKey, sectionValue]: [string, ConfigValue]) => {
-          const isObject =
-            typeof sectionValue === "object" &&
-            sectionValue !== null &&
-            !Array.isArray(sectionValue);
-          const isCollapsed = collapsed[sectionKey] ?? false;
-
-          return (
-            <div
-              key={sectionKey}
+    <div className="flex flex-col h-full p-6 gap-4 animate-fade-in overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Settings className="h-5 w-5" style={{ color: 'var(--pc-accent)' }} />
+          <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--pc-text-primary)' }}>{t('config.configuration_title')}</h2>
+        </div>
+        <div className="flex items-center gap-3">
+          {/* Mode toggle */}
+          <div className="flex rounded-xl overflow-hidden border" style={{ borderColor: 'var(--pc-border)' }}>
+            <button
+              type="button"
+              onClick={() => switchMode('form')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors"
               style={{
-                background: "var(--bg-card)",
-                border: "1px solid var(--border)",
-                clipPath: clipCorner(10),
-                marginBottom: 12,
-                overflow: "hidden",
+                background: mode === 'form' ? 'var(--pc-accent)' : 'var(--pc-bg-surface)',
+                color: mode === 'form' ? 'white' : 'var(--pc-text-secondary)',
               }}
             >
-              <div
-                onClick={() => toggleSection(sectionKey)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "10px 16px",
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: "Syne, sans-serif",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    textTransform: "uppercase",
-                    color: "var(--text-primary)",
-                    letterSpacing: 0.8,
-                  }}
-                >
-                  {sectionKey}
-                </span>
-                <span
-                  style={{
-                    color: "var(--text-dim)",
-                    fontSize: 12,
-                    transition: "transform 0.2s",
-                    transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
-                  }}
-                >
-                  ▼
-                </span>
-              </div>
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              {t('config.mode.form')}
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode('advanced')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors"
+              style={{
+                background: mode === 'advanced' ? 'var(--pc-accent)' : 'var(--pc-bg-surface)',
+                color: mode === 'advanced' ? 'white' : 'var(--pc-text-secondary)',
+              }}
+            >
+              <Code className="h-3.5 w-3.5" />
+              {t('config.mode.advanced')}
+            </button>
+          </div>
 
-              {!isCollapsed && (
-                <div style={{ padding: "4px 16px 12px" }}>
-                  {isObject
-                    ? Object.entries(
-                        sectionValue as Record<string, ConfigValue>,
-                      ).map(([k, v]) => renderField(k, v, [sectionKey], 0))
-                    : renderField(sectionKey, sectionValue, [], 0)}
-                </div>
-              )}
-            </div>
-          );
-        };
-
-        return (
-          <>
-            {primaryEntries.map(renderSection)}
-
-            {advancedEntries.length > 0 && (
-              <>
-                <div
-                  onClick={() => setShowAdvanced((prev) => !prev)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "12px 0",
-                    cursor: "pointer",
-                    userSelect: "none",
-                    marginTop: 8,
-                    marginBottom: 4,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: "Syne, sans-serif",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      textTransform: "uppercase",
-                      letterSpacing: 2,
-                      color: "var(--text-dim)",
-                    }}
-                  >
-                    Advanced
-                  </span>
-                  <span
-                    style={{
-                      color: "var(--text-dim)",
-                      fontSize: 11,
-                      transition: "transform 0.2s",
-                      transform: showAdvanced ? "rotate(0deg)" : "rotate(-90deg)",
-                    }}
-                  >
-                    ▼
-                  </span>
-                  <div
-                    style={{
-                      flex: 1,
-                      height: 1,
-                      background: "var(--border)",
-                    }}
-                  />
-                </div>
-
-                {showAdvanced && advancedEntries.map(renderSection)}
-              </>
-            )}
-          </>
-        );
-      })()}
-
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          marginTop: 20,
-          justifyContent: "flex-end",
-          alignItems: "center",
-        }}
-      >
-        {saveStatus && (
-          <span
-            style={{
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: 1,
-              textTransform: "uppercase",
-              color:
-                saveStatus === "error"
-                  ? "#ef4444"
-                  : saveStatus === "saving" || saveStatus === "verifying"
-                    ? "#f59e0b"
-                    : "#22c55e",
-              animation:
-                saveStatus === "saving"
-                  ? "pulse 1.5s ease-in-out infinite"
-                  : undefined,
-            }}
-          >
-            {saveStatus === "saving" && "PUSHING TO AGENT..."}
-            {saveStatus === "deployed" && "DEPLOYED"}
-            {saveStatus === "verifying" && "VERIFYING..."}
-            {saveStatus === "confirmed" && "CONFIRMED"}
-            {saveStatus === "error" && "FAILED"}
-          </span>
-        )}
-        <button
-          onClick={loadConfig}
-          style={{
-            fontFamily: "JetBrains Mono, monospace",
-            fontSize: 12,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: 1,
-            padding: "8px 20px",
-            background: "transparent",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-            cursor: "pointer",
-            clipPath: clipCorner(6),
-          }}
-        >
-          Reload
-        </button>
-        <button
-          onClick={handleSave}
-          disabled={!dirty || saving}
-          style={{
-            fontFamily: "JetBrains Mono, monospace",
-            fontSize: 12,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: 1,
-            padding: "8px 20px",
-            background: dirty && !saving ? "var(--amber)" : "var(--bg-card)",
-            border: `1px solid ${dirty && !saving ? "var(--amber)" : "var(--border)"}`,
-            color: dirty && !saving ? "#000" : "var(--text-dim)",
-            cursor: dirty && !saving ? "pointer" : "not-allowed",
-            clipPath: clipCorner(6),
-            opacity: dirty && !saving ? 1 : 0.5,
-            transition: "opacity 0.2s, background 0.2s, color 0.2s",
-          }}
-        >
-          Save Changes
-        </button>
+          <button onClick={save} disabled={saving} className="btn-electric flex items-center gap-2 text-sm px-4 py-2">
+            <Save className="h-4 w-4" />{saving ? t('config.saving') : t('config.save')}
+          </button>
+        </div>
       </div>
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-      `}</style>
+
+      {/* Sensitive fields note */}
+      <div className="flex items-start gap-3 rounded-2xl p-4 border flex-shrink-0" style={{ borderColor: 'rgba(255, 170, 0, 0.2)', background: 'rgba(255, 170, 0, 0.05)' }}>
+        <ShieldAlert className="h-5 w-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-status-warning)' }} />
+        <div>
+          <p className="text-sm font-medium" style={{ color: 'var(--color-status-warning)' }}>
+            {t('config.sensitive_title')}
+          </p>
+          <p className="text-sm mt-0.5" style={{ color: 'rgba(255, 170, 0, 0.7)' }}>
+            {t('config.sensitive_hint')}
+          </p>
+        </div>
+      </div>
+
+      {/* Success message */}
+      {success && (
+        <div className="flex items-center gap-2 rounded-xl p-3 border animate-fade-in flex-shrink-0" style={{ borderColor: 'rgba(0, 230, 138, 0.2)', background: 'rgba(0, 230, 138, 0.06)' }}>
+          <CheckCircle className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-status-success)' }} />
+          <span className="text-sm" style={{ color: 'var(--color-status-success)' }}>{success}</span>
+        </div>
+      )}
+
+      {/* Error / parse error message */}
+      {(error || parseError) && (
+        <div className="flex items-center gap-2 rounded-xl p-3 border animate-fade-in flex-shrink-0" style={{ borderColor: 'rgba(239, 68, 68, 0.2)', background: 'rgba(239, 68, 68, 0.06)' }}>
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-status-error)' }} />
+          <span className="text-sm" style={{ color: 'var(--color-status-error)' }}>{error || parseError}</span>
+        </div>
+      )}
+
+      {/* Content: Form or TOML editor */}
+      {mode === 'form' ? (
+        <ConfigFormView config={parsedConfig} onUpdate={updateField} />
+      ) : (
+        <ConfigTomlEditor value={rawToml} onChange={updateRawToml} />
+      )}
     </div>
   );
 }
