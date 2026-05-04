@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1-labs
+# syntax=docker/dockerfile:1.7
 
 # ── Stage 0: Frontend build ─────────────────────────────────────
 FROM node:22-alpine AS web-builder
@@ -36,53 +36,35 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# 1. Copy manifests to cache dependencies
+# Copy real sources for one cargo build.
+#
+# The original two-stage stub layout (manifests + empty stub `src/lib.rs`
+# per crate, then full `cargo build` for dep cache, then real sources)
+# does not survive a persistent target cache: `zeroclaw-api` and friends
+# get compiled into the cache as empty libs, and on the second build
+# Cargo treats the (now-real) sources as already-built and serves the
+# stub metadata. Dependents then fail with hundreds of unresolved
+# imports against modules that "only exist in the real lib.rs".
+#
+# Mirror fork-073 row 1's fix for the distroless `Dockerfile`: copy
+# everything once, build once, rely on the registry/git mounts for the
+# fetch cache and the target mount for incremental compilation across
+# CI runs. The downside is that any change in `crates/*/src/*` busts
+# this layer's local cache — the registry mount still keeps the
+# external-dep download cost in check.
 COPY Cargo.toml Cargo.lock ./
-# Copy every workspace-member manifest in one glob — adding or removing a crate
-# no longer requires editing this file.  --parents preserves the
-# crates/<name>/Cargo.toml directory structure.
-# aardvark-sys has an implicit build script (build.rs at its crate root) that
-# Cargo must compile during the dependency pre-fetch step; copy it explicitly.
-COPY --parents crates/*/Cargo.toml ./
-COPY --parents crates/aardvark-sys/build.rs ./
-# apps/tauri: .dockerignore whitelists only Cargo.toml; src is stubbed below.
+COPY crates/ crates/
 COPY apps/tauri/Cargo.toml apps/tauri/Cargo.toml
-# Workspace members added in v0.7.4 — copy whole subtrees so workspace
-# resolution succeeds without per-crate stubbing. Both are small and rarely
-# changed; the loss of layer-cache granularity is acceptable.
 COPY tools/ tools/
 COPY xtask/ xtask/
-# Create dummy targets for all workspace members so manifest parsing succeeds.
-RUN mkdir -p src benches apps/tauri/src \
-    && echo "fn main() {}" > src/main.rs \
-    && echo "" > src/lib.rs \
-    && echo "fn main() {}" > benches/agent_benchmarks.rs \
-    && echo "fn main() {}" > apps/tauri/src/main.rs \
-    && for d in crates/*/; do mkdir -p "${d}src" && printf '' > "${d}src/lib.rs"; done
-RUN --mount=type=cache,id=zeroclaw-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=zeroclaw-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=zeroclaw-target,target=/app/target,sharing=locked \
-    if [ -n "$ZEROCLAW_CARGO_FEATURES" ]; then \
-      cargo build --release --locked --features "$ZEROCLAW_CARGO_FEATURES"; \
-    else \
-      cargo build --release --locked; \
-    fi
-RUN rm -rf src benches
-
-# 2. Copy real sources for the final compile.
-#    - Root `src/` and `benches/` replace the dummy targets created above.
-#    - `crates/` overwrites the per-crate stub `src/lib.rs` files written into
-#      `crates/*/src/` during the pre-fetch stage; without this, the root crate
-#      fails with hundreds of `unresolved import` errors against
-#      `zeroclaw_runtime::*`, `zeroclaw_channels::*`, etc., because those
-#      modules only exist in the real source files.
-#    - Avoid pulling docs/tests/scripts here so cache busting is limited to
-#      changes that actually affect compilation.
 COPY src/ src/
 COPY benches/ benches/
-COPY crates/ crates/
 COPY --from=web-builder /web/dist web/dist
-RUN touch src/main.rs src/lib.rs
+# apps/tauri's full source is excluded by .dockerignore (its .toml is
+# whitelisted for workspace resolution only); stub a `main.rs` so cargo
+# can produce a dummy bin without it.
+RUN mkdir -p apps/tauri/src \
+    && echo "fn main() {}" > apps/tauri/src/main.rs
 RUN --mount=type=cache,id=zeroclaw-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=zeroclaw-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=zeroclaw-target,target=/app/target,sharing=locked \
