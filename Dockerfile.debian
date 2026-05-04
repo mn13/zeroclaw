@@ -69,9 +69,18 @@ RUN --mount=type=cache,id=zeroclaw-cargo-registry,target=/usr/local/cargo/regist
     fi
 RUN rm -rf src benches
 
-# 2. Copy only build-relevant source paths (avoid cache-busting on docs/tests/scripts)
+# 2. Copy real sources for the final compile.
+#    - Root `src/` and `benches/` replace the dummy targets created above.
+#    - `crates/` overwrites the per-crate stub `src/lib.rs` files written into
+#      `crates/*/src/` during the pre-fetch stage; without this, the root crate
+#      fails with hundreds of `unresolved import` errors against
+#      `zeroclaw_runtime::*`, `zeroclaw_channels::*`, etc., because those
+#      modules only exist in the real source files.
+#    - Avoid pulling docs/tests/scripts here so cache busting is limited to
+#      changes that actually affect compilation.
 COPY src/ src/
 COPY benches/ benches/
+COPY crates/ crates/
 COPY --from=web-builder /web/dist web/dist
 RUN touch src/main.rs src/lib.rs
 RUN --mount=type=cache,id=zeroclaw-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
