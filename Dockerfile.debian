@@ -47,6 +47,11 @@ COPY --parents crates/*/Cargo.toml ./
 COPY --parents crates/aardvark-sys/build.rs ./
 # apps/tauri: .dockerignore whitelists only Cargo.toml; src is stubbed below.
 COPY apps/tauri/Cargo.toml apps/tauri/Cargo.toml
+# Workspace members added in v0.7.4 — copy whole subtrees so workspace
+# resolution succeeds without per-crate stubbing. Both are small and rarely
+# changed; the loss of layer-cache granularity is acceptable.
+COPY tools/ tools/
+COPY xtask/ xtask/
 # Create dummy targets for all workspace members so manifest parsing succeeds.
 RUN mkdir -p src benches apps/tauri/src \
     && echo "fn main() {}" > src/main.rs \
