@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.8
+# syntax=docker/dockerfile:1-labs
 
 # ── Stage 0: Frontend build ─────────────────────────────────────
 FROM node:22-alpine AS web-builder
