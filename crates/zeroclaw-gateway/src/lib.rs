@@ -859,17 +859,19 @@ pub async fn run_gateway(
 
     // Install the SSE broadcast hook before building any observer so that
     // events emitted by the agent's per-call observer (built inside
-    // `process_message`) also reach `/api/events`. The state-level observer
-    // is the process-wide `shared_observer` — `TeeObserver` (created by
-    // `create_observer` inside `shared_observer`) tees its events into the
-    // hook automatically, and sharing the same Arc across subsystems keeps
-    // metrics recorded by the channels orchestrator visible at `/metrics`.
+    // `process_message`) also reach `/api/events`.
     let broadcast_layer: Arc<dyn zeroclaw_runtime::observability::Observer> = Arc::new(
         sse::BroadcastObserver::new(event_tx.clone(), event_buffer.clone()),
     );
     zeroclaw_runtime::observability::set_broadcast_hook(broadcast_layer);
 
-    let broadcast_observer: Arc<dyn zeroclaw_runtime::observability::Observer> =
+    // Bound into AppState. Not a broadcaster — the broadcaster is the
+    // `broadcast_layer` installed above as the global hook. This is the
+    // process-wide `shared_observer` (the configured backend wrapped by
+    // `TeeObserver`), which tees events into the hook on every record and
+    // shares the same Arc across subsystems so that metrics recorded by the
+    // channels orchestrator stay visible at `/metrics`.
+    let state_observer: Arc<dyn zeroclaw_runtime::observability::Observer> =
         zeroclaw_runtime::observability::shared_observer(&config.observability);
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -914,7 +916,7 @@ pub async fn run_gateway(
         nextcloud_talk_webhook_secret,
         wati: wati_channel,
         gmail_push: gmail_push_channel,
-        observer: broadcast_observer,
+        observer: state_observer,
         tools_registry,
         cost_tracker,
         event_tx,
