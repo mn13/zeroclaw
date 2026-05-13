@@ -848,6 +848,7 @@ fn convert_delivery_decl(decl: &zeroclaw_config::schema::DeliveryConfigDecl) -> 
         mode: decl.mode.clone(),
         channel: decl.channel.clone(),
         to: decl.to.clone(),
+        thread_id: decl.thread_id.clone(),
         best_effort: decl.best_effort,
     }
 }
@@ -1021,6 +1022,7 @@ mod tests {
                 mode: "announce".into(),
                 channel: Some("discord".into()),
                 to: Some("1234567890".into()),
+                thread_id: None,
                 best_effort: true,
             }),
         )
@@ -1055,6 +1057,7 @@ mod tests {
                 mode: "announce".into(),
                 channel: Some("discord".into()),
                 to: None,
+                thread_id: None,
                 best_effort: true,
             }),
             false,
@@ -1082,6 +1085,7 @@ mod tests {
                 mode: "annouce".into(),
                 channel: Some("discord".into()),
                 to: Some("1234567890".into()),
+                thread_id: None,
                 best_effort: true,
             }),
         )

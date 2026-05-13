@@ -1648,10 +1648,10 @@ async fn main() -> Result<()> {
             // Wire cron delivery to the channels orchestrator
             #[cfg(feature = "agent-runtime")]
             zeroclaw_runtime::cron::scheduler::register_delivery_fn(Box::new(
-                |config, channel, target, output| {
+                |config, channel, target, thread_id, output| {
                     Box::pin(async move {
                         zeroclaw_channels::orchestrator::deliver_announcement(
-                            &config, &channel, &target, &output,
+                            &config, &channel, &target, thread_id, &output,
                         )
                         .await
                     })
