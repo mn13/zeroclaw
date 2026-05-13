@@ -483,15 +483,25 @@ async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> 
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("delivery.to is required for announce mode"))?;
 
-    deliver_announcement(config, channel, target, output).await
+    deliver_announcement(
+        config,
+        channel,
+        target,
+        delivery.thread_id.as_deref(),
+        output,
+    )
+    .await
 }
 
 /// Delivery function type — takes owned values so the returned future is 'static.
+/// The fourth `Option<String>` is the optional thread/conversation id propagated
+/// to channels whose outbound `thread_id` is distinct from the recipient (webhook).
 pub type DeliveryFn = Box<
     dyn Fn(
             Config,
             String,
             String,
+            Option<String>,
             String,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>
         + Send
@@ -510,6 +520,7 @@ pub async fn deliver_announcement(
     config: &Config,
     channel: &str,
     target: &str,
+    thread_id: Option<&str>,
     output: &str,
 ) -> Result<()> {
     if let Some(f) = DELIVERY_FN.get() {
@@ -517,6 +528,7 @@ pub async fn deliver_announcement(
             config.clone(),
             channel.to_string(),
             target.to_string(),
+            thread_id.map(str::to_string),
             output.to_string(),
         )
         .await
@@ -1179,6 +1191,7 @@ mod tests {
                 mode: "announce".into(),
                 channel: Some("telegram".into()),
                 to: Some("123456".into()),
+                thread_id: None,
                 best_effort: false,
             }),
             false,
@@ -1218,6 +1231,7 @@ mod tests {
                 mode: "announce".into(),
                 channel: Some("telegram".into()),
                 to: Some("123456".into()),
+                thread_id: None,
                 best_effort: true,
             }),
             false,
@@ -1291,7 +1305,7 @@ mod tests {
         // failure. The caller (persist_job_result) should record the job
         // execution as successful; the missing handler is logged via
         // tracing::warn for operator visibility.
-        deliver_announcement(&config, "telegram", "chat-id", "payload")
+        deliver_announcement(&config, "telegram", "chat-id", None, "payload")
             .await
             .expect("missing delivery handler should be Ok with a warn log");
     }
