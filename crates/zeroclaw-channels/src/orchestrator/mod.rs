@@ -2259,6 +2259,28 @@ fn strip_tool_narration(message: &str) -> String {
         "just a moment",
         "give me a moment",
         "allow me to ",
+        // Third-person / meta-planning forms emitted by prompt-guided tool
+        // models (e.g. GLM-5 on Venice) when they "show their work" instead
+        // of just calling tools. See #6040-class leaks where the actual
+        // answer is preceded by paragraphs of internal monologue.
+        "the user ",
+        "looking at the ",
+        "based on the ",
+        "based on what ",
+        "this sounds like",
+        "this looks like",
+        "first, let me",
+        "first, i'll",
+        "first, i ",
+        "first, i'",
+        "actually, let me",
+        "actually, i ",
+        "actually, i'",
+        "to answer ",
+        "to help ",
+        "to find ",
+        "to determine ",
+        "in order to ",
     ];
 
     let mut result_lines: Vec<&str> = Vec::new();
@@ -6295,6 +6317,49 @@ mod tests {
         assert!(result.contains("Here is the search result."));
     }
 
+    /// Reproduces a real leak observed with GLM-5 on Venice: the model
+    /// prepended third-person planning narration ("The user is asking…",
+    /// "Looking at the available tools…") before the actual answer.
+    /// The original prefix list only matched first-person forms, so the
+    /// leading line failed to match and `strip_tool_narration` short-
+    /// circuited, leaving the entire response intact.
+    #[test]
+    fn strip_tool_narration_handles_third_person_and_meta_planning_leak() {
+        let input = "The user is asking about their goal.\n\
+                     \n\
+                     Looking at the available tools, I can see hirebase__goals.get.\n\
+                     \n\
+                     Based on my records, here is what I know about your goal:\n\
+                     \n\
+                     Progress: 50%.";
+
+        let result = strip_tool_narration(input);
+
+        assert!(
+            !result.starts_with("The user is asking"),
+            "third-person narration not stripped: {result:?}"
+        );
+        assert!(
+            !result.contains("Looking at the available tools"),
+            "leading meta-planning lines not stripped: {result:?}"
+        );
+        assert!(
+            result.contains("Progress: 50%."),
+            "actual answer body should be preserved: {result:?}"
+        );
+    }
+
+    #[test]
+    fn strip_tool_narration_preserves_messages_starting_with_real_content() {
+        // Guard against over-stripping: a response that opens with a clean
+        // statement (no narration prefixes) must come through unchanged.
+        let input = "The answer is 42 because of the underlying calculation.";
+
+        let result = strip_tool_narration(input);
+
+        assert_eq!(result, input);
+    }
+
     #[test]
     fn normalize_cached_channel_turns_merges_consecutive_user_turns() {
         let turns = vec![
@@ -6819,7 +6884,7 @@ mod tests {
             _system_prompt: Option<&str>,
             _message: &str,
             model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> anyhow::Result<String> {
             self.models
                 .lock()
@@ -6842,7 +6907,7 @@ mod tests {
             _system_prompt: Option<&str>,
             message: &str,
             _model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> anyhow::Result<String> {
             if message
                 .starts_with("Decide whether the assistant should send any visible reply")

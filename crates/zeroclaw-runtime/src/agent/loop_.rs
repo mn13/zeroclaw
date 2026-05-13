@@ -2045,6 +2045,13 @@ pub fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
     instructions.push_str(
         "CRITICAL: Output actual <tool_call> tags—never describe steps or give examples.\n\n",
     );
+    instructions.push_str(
+        "CRITICAL: Do NOT narrate your reasoning, list available tools, or explain your \
+plan in the user-visible response. Either emit <tool_call> tags to invoke tools, or write \
+the final answer directly. Never include lines like \"The user is asking…\", \"Let me \
+check…\", \"Looking at the available tools…\", or descriptions of what you are about to do. \
+Reasoning belongs in your own private thinking, not in the reply.\n\n",
+    );
     instructions.push_str("Example: User says \"what's the date?\". You MUST respond with:\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}\n</tool_call>\n\n");
     instructions.push_str("You may use multiple tool calls in a single response. ");
     instructions.push_str("After tool execution, results appear in <tool_result> tags. ");
