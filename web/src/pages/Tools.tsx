@@ -1,544 +1,202 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { listTools, getConfig, updateConfig } from "../api";
-import type { ToolInfo } from "../api";
-import { clipCorner } from "../theme";
+import { useState, useEffect } from 'react';
+import {
+  Wrench,
+  Search,
+  ChevronDown,
+  ChevronRight,
+  Terminal,
+  Package,
+} from 'lucide-react';
+import type { ToolSpec, CliTool } from '@/types/api';
+import { getTools, getCliTools } from '@/lib/api';
+import { t } from '@/lib/i18n';
 
-interface Props {
-  instanceId: string;
-  toast: (msg: string, isError?: boolean) => void;
-}
-
-interface AutonomyFields {
-  allowed_commands: string[];
-  auto_approve: string[];
-  always_ask: string[];
-  forbidden_paths: string[];
-  non_cli_excluded_tools: string[];
-}
-
-const FIELD_META: {
-  key: keyof AutonomyFields;
-  label: string;
-  description: string;
-}[] = [
-  {
-    key: "allowed_commands",
-    label: "Shell Whitelist",
-    description: "Commands the agent can run",
-  },
-  {
-    key: "auto_approve",
-    label: "Auto-Approve",
-    description: "Tools that run without confirmation",
-  },
-  {
-    key: "always_ask",
-    label: "Always Ask",
-    description: "Tools that always require confirmation",
-  },
-  {
-    key: "forbidden_paths",
-    label: "Forbidden Paths",
-    description: "Paths the agent cannot access",
-  },
-  {
-    key: "non_cli_excluded_tools",
-    label: "Non-CLI Excluded",
-    description: "Tools excluded from non-CLI channels",
-  },
-];
-
-const EMPTY_AUTONOMY: AutonomyFields = {
-  allowed_commands: [],
-  auto_approve: [],
-  always_ask: [],
-  forbidden_paths: [],
-  non_cli_excluded_tools: [],
-};
-
-function deepClone<T>(obj: T): T {
-  return JSON.parse(JSON.stringify(obj));
-}
-
-function extractAutonomy(config: Record<string, unknown>): AutonomyFields {
-  const autonomy = (config.autonomy ?? {}) as Record<string, unknown>;
-  const result = deepClone(EMPTY_AUTONOMY);
-  for (const field of FIELD_META) {
-    const val = autonomy[field.key];
-    if (Array.isArray(val)) {
-      result[field.key] = val.map(String);
-    }
-  }
-  return result;
-}
-
-type SaveStatus = null | "saving" | "saved" | "error";
-
-export default function Tools({ instanceId, toast }: Props) {
-  const [tools, setTools] = useState<ToolInfo[]>([]);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+export default function Tools() {
+  const [tools, setTools] = useState<ToolSpec[]>([]);
+  const [cliTools, setCliTools] = useState<CliTool[]>([]);
+  const [search, setSearch] = useState('');
+  const [expandedTool, setExpandedTool] = useState<string | null>(null);
+  const [agentSectionOpen, setAgentSectionOpen] = useState(true);
+  const [cliSectionOpen, setCliSectionOpen] = useState(true);
   const [loading, setLoading] = useState(true);
-
-  const [savedAutonomy, setSavedAutonomy] = useState<AutonomyFields>(
-    deepClone(EMPTY_AUTONOMY),
-  );
-  const [draft, setDraft] = useState<AutonomyFields>(
-    deepClone(EMPTY_AUTONOMY),
-  );
-  const [inputValues, setInputValues] = useState<
-    Record<keyof AutonomyFields, string>
-  >({
-    allowed_commands: "",
-    auto_approve: "",
-    always_ask: "",
-    forbidden_paths: "",
-    non_cli_excluded_tools: "",
-  });
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
-
-  const dirty = useMemo(
-    () => JSON.stringify(draft) !== JSON.stringify(savedAutonomy),
-    [draft, savedAutonomy],
-  );
-
-  const load = useCallback(() => {
-    setLoading(true);
-    Promise.all([
-      listTools(instanceId).catch(() => ({ tools: [] as ToolInfo[] })),
-      getConfig(instanceId).catch(() => ({} as Record<string, unknown>)),
-    ])
-      .then(([toolsRes, configRes]) => {
-        setTools(toolsRes.tools);
-        const autonomy = extractAutonomy(configRes);
-        setSavedAutonomy(deepClone(autonomy));
-        setDraft(deepClone(autonomy));
-      })
-      .catch((err) => toast(err.message, true))
-      .finally(() => setLoading(false));
-  }, [instanceId, toast]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    load();
-  }, [load]);
-
-  const toggleParams = useCallback((name: string) => {
-    setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
+    Promise.all([getTools(), getCliTools()])
+      .then(([t, c]) => { setTools(t); setCliTools(c); })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
   }, []);
 
-  const addTag = useCallback(
-    (field: keyof AutonomyFields, value: string) => {
-      const trimmed = value.trim();
-      if (!trimmed) return;
-      if (draft[field].includes(trimmed)) return;
-      setDraft((prev) => ({
-        ...prev,
-        [field]: [...prev[field], trimmed],
-      }));
-    },
-    [draft],
+  const filtered = tools.filter((t) =>
+    t.name.toLowerCase().includes(search.toLowerCase()) ||
+    t.description.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const removeTag = useCallback(
-    (field: keyof AutonomyFields, index: number) => {
-      setDraft((prev) => ({
-        ...prev,
-        [field]: prev[field].filter((_, i) => i !== index),
-      }));
-    },
-    [],
+  const filteredCli = cliTools.filter((t) =>
+    t.name.toLowerCase().includes(search.toLowerCase()) ||
+    t.category.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const handleSave = useCallback(async () => {
-    setSaveStatus("saving");
-    try {
-      const payload: Record<string, unknown> = {
-        autonomy: { ...draft },
-      };
-      const result = await updateConfig(instanceId, payload);
-      setSavedAutonomy(deepClone(draft));
-      setSaveStatus("saved");
-      toast(
-        `Updated ${result.updated_fields.length} field(s)` +
-          (result.requires_restart ? " — restart required" : ""),
-      );
-      setTimeout(() => setSaveStatus(null), 3000);
-    } catch (err: unknown) {
-      setSaveStatus("error");
-      toast(err instanceof Error ? err.message : "Save failed", true);
-      setTimeout(() => setSaveStatus(null), 3000);
-    }
-  }, [instanceId, draft, toast]);
+  if (error) {
+    return (
+      <div className="p-6 animate-fade-in">
+        <div className="rounded-2xl border p-4" style={{ background: 'rgba(239, 68, 68, 0.08)', borderColor: 'rgba(239, 68, 68, 0.2)', color: '#f87171' }}>
+          {t('tools.load_error')}: {error}
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
-      <div
-        style={{
-          padding: 32,
-          color: "var(--text-dim)",
-          fontFamily: "Outfit, sans-serif",
-          fontSize: 14,
-        }}
-      >
-        Loading tools...
+      <div className="flex items-center justify-center h-64">
+        <div className="h-8 w-8 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--pc-border)', borderTopColor: 'var(--pc-accent)' }} />
       </div>
     );
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 900, flex: 1, overflowY: "auto" }}>
-      {/* ── REGISTERED TOOLS ── */}
-      <h2
-        style={{
-          fontFamily: "Syne, sans-serif",
-          fontSize: 18,
-          fontWeight: 700,
-          color: "var(--amber)",
-          marginBottom: 20,
-          textTransform: "uppercase",
-          letterSpacing: 1,
-        }}
-      >
-        Registered Tools
-      </h2>
+    <div className="p-6 space-y-6 animate-fade-in">
+      {/* Search */}
+      <div className="relative max-w-md">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: 'var(--pc-text-faint)' }} />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t('tools.search')}
+          className="input-electric w-full pl-10 pr-4 py-2.5 text-sm"
+        />
+      </div>
 
-      {tools.length === 0 ? (
-        <div
-          style={{
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-            clipPath: clipCorner(10),
-            padding: 24,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 10,
-            marginBottom: 32,
-          }}
+      {/* Agent Tools Grid */}
+      <div>
+        <button
+          onClick={() => setAgentSectionOpen((v) => !v)}
+          className="flex items-center gap-2 mb-4 w-full text-left group"
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+          aria-expanded={agentSectionOpen}
+          aria-controls="agent-tools-section"
         >
-          <div
-            style={{
-              fontSize: 28,
-              color: "var(--text-dim)",
-              fontFamily: "JetBrains Mono, monospace",
-            }}
-          >
-            {"{ }"}
-          </div>
-          <div
-            style={{
-              fontFamily: "Outfit, sans-serif",
-              fontSize: 13,
-              color: "var(--text-dim)",
-              textAlign: "center",
-            }}
-          >
-            No tools reported by agent — tools are dynamically loaded at runtime
-          </div>
-        </div>
-      ) : (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-            marginBottom: 32,
-          }}
-        >
-          {tools.map((tool) => {
-            const isExpanded = expanded[tool.name] ?? false;
-            return (
-              <div
-                key={tool.name}
-                style={{
-                  background: "var(--bg-card)",
-                  border: "1px solid var(--border)",
-                  clipPath: clipCorner(10),
-                  padding: 16,
-                  transition: "border-color 0.2s",
-                }}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.borderColor = "var(--border-amber)")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.borderColor = "var(--border)")
-                }
-              >
-                <div
-                  style={{
-                    fontFamily: "JetBrains Mono, monospace",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    color: "var(--amber)",
-                    marginBottom: 4,
-                  }}
-                >
-                  {tool.name}
-                </div>
-                <div
-                  style={{
-                    fontFamily: "Outfit, sans-serif",
-                    fontSize: 13,
-                    color: "var(--text-dim)",
-                    marginBottom: 8,
-                  }}
-                >
-                  {tool.description}
-                </div>
-                {tool.parameters &&
-                  Object.keys(tool.parameters).length > 0 && (
-                    <>
-                      <div
-                        onClick={() => toggleParams(tool.name)}
-                        style={{
-                          fontFamily: "JetBrains Mono, monospace",
-                          fontSize: 11,
-                          color: "var(--text-dim)",
-                          cursor: "pointer",
-                          userSelect: "none",
-                          marginBottom: isExpanded ? 8 : 0,
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: "inline-block",
-                            transition: "transform 0.2s",
-                            transform: isExpanded
-                              ? "rotate(90deg)"
-                              : "rotate(0deg)",
-                            marginRight: 6,
-                          }}
-                        >
-                          ▸
-                        </span>
-                        parameters
-                      </div>
-                      {isExpanded && (
-                        <div
-                          style={{
-                            background: "var(--bg-input)",
-                            fontFamily: "JetBrains Mono, monospace",
-                            fontSize: 10,
-                            color: "var(--text-primary)",
-                            padding: 12,
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            clipPath: clipCorner(6),
-                          }}
-                        >
-                          {JSON.stringify(tool.parameters, null, 2)}
+          <Wrench className="h-5 w-5" style={{ color: 'var(--pc-accent)' }} />
+          <span className="text-sm font-semibold uppercase tracking-wider flex-1" role="heading" aria-level={2} style={{ color: 'var(--pc-text-primary)' }}>
+            {t('tools.agent_tools')} ({filtered.length})
+          </span>
+          <ChevronDown
+            className="h-4 w-4 opacity-40 group-hover:opacity-100"
+            style={{ color: 'var(--pc-text-muted)', transform: agentSectionOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s ease, opacity 0.2s ease' }}
+          />
+        </button>
+
+        <div id="agent-tools-section">
+          {agentSectionOpen && (filtered.length === 0 ? (
+            <p className="text-sm" style={{ color: 'var(--pc-text-muted)' }}>{t('tools.empty')}</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 stagger-children">
+              {filtered.map((tool) => {
+                const isExpanded = expandedTool === tool.name;
+                return (
+                  <div
+                    key={tool.name}
+                    className="card overflow-hidden animate-slide-in-up"
+                  >
+                    <button
+                      onClick={() => setExpandedTool(isExpanded ? null : tool.name)}
+                      className="w-full text-left p-4 transition-all h-full"
+                      style={{ background: 'transparent' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pc-hover)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Package className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--pc-accent)' }} />
+                          <h3 className="text-sm font-semibold truncate" style={{ color: 'var(--pc-text-primary)' }}>{tool.name}</h3>
                         </div>
-                      )}
-                    </>
-                  )}
-              </div>
-            );
-          })}
+                        {isExpanded
+                          ? <ChevronDown className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--pc-accent)' }} />
+                          : <ChevronRight className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--pc-text-faint)' }} />
+                        }
+                      </div>
+                      <p className="text-sm mt-2 line-clamp-2" style={{ color: 'var(--pc-text-muted)' }}>
+                        {tool.description}
+                      </p>
+                    </button>
+
+                    {isExpanded && tool.parameters && (
+                      <div className="border-t p-4 animate-fade-in" style={{ borderColor: 'var(--pc-border)' }}>
+                        <p className="text-[10px] font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--pc-text-muted)' }}>
+                          {t('tools.parameter_schema')}
+                        </p>
+                        <pre className="text-xs rounded-xl p-3 overflow-x-auto max-h-64 overflow-y-auto font-mono" style={{ background: 'var(--pc-bg-base)', color: 'var(--pc-text-secondary)' }}>
+                          {JSON.stringify(tool.parameters, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* CLI Tools Section */}
+      {filteredCli.length > 0 && (
+        <div className="animate-slide-in-up" style={{ animationDelay: '200ms' }}>
+          <button
+            onClick={() => setCliSectionOpen((v) => !v)}
+            className="flex items-center gap-2 mb-4 w-full text-left group"
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+            aria-expanded={cliSectionOpen}
+            aria-controls="cli-tools-section"
+          >
+            <Terminal className="h-5 w-5" style={{ color: 'var(--color-status-success)' }} />
+            <span className="text-sm font-semibold uppercase tracking-wider flex-1" role="heading" aria-level={2} style={{ color: 'var(--pc-text-primary)' }}>
+              {t('tools.cli_tools')} ({filteredCli.length})
+            </span>
+            <ChevronDown
+              className="h-4 w-4 opacity-40 group-hover:opacity-100"
+              style={{ color: 'var(--pc-text-muted)', transform: cliSectionOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s ease, opacity 0.2s ease' }}
+            />
+          </button>
+
+          <div id="cli-tools-section">
+            {cliSectionOpen && <div className="card overflow-hidden rounded-2xl">
+              <table className="table-electric">
+                <thead>
+                  <tr>
+                    <th>{t('tools.name')}</th>
+                    <th>{t('tools.path')}</th>
+                    <th>{t('tools.version')}</th>
+                    <th>{t('tools.category')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredCli.map((tool) => (
+                    <tr key={tool.name}>
+                      <td className="font-medium text-sm" style={{ color: 'var(--pc-text-primary)' }}>
+                        {tool.name}
+                      </td>
+                      <td className="font-mono text-xs truncate max-w-[200px]" style={{ color: 'var(--pc-text-muted)' }}>
+                        {tool.path}
+                      </td>
+                      <td style={{ color: 'var(--pc-text-muted)' }}>
+                        {tool.version ?? '-'}
+                      </td>
+                      <td>
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-semibold capitalize border" style={{ borderColor: 'var(--pc-border)', color: 'var(--pc-text-secondary)', background: 'var(--pc-accent-glow)' }}>
+                          {tool.category}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>}
+          </div>
         </div>
       )}
-
-      {/* ── TOOL CONFIGURATION ── */}
-      <h2
-        style={{
-          fontFamily: "Syne, sans-serif",
-          fontSize: 18,
-          fontWeight: 700,
-          color: "var(--amber)",
-          marginBottom: 20,
-          textTransform: "uppercase",
-          letterSpacing: 1,
-        }}
-      >
-        Tool Configuration
-      </h2>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {FIELD_META.map(({ key, label, description }) => (
-          <div
-            key={key}
-            style={{
-              background: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              clipPath: clipCorner(10),
-              padding: 16,
-            }}
-          >
-            <div
-              style={{
-                fontFamily: "Syne, sans-serif",
-                fontSize: 13,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                color: "var(--text-primary)",
-                letterSpacing: 0.8,
-                marginBottom: 2,
-              }}
-            >
-              {label}
-            </div>
-            <div
-              style={{
-                fontFamily: "Outfit, sans-serif",
-                fontSize: 12,
-                color: "var(--text-dim)",
-                marginBottom: 10,
-              }}
-            >
-              {description}
-            </div>
-
-            {/* Tags */}
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 6,
-                marginBottom: draft[key].length > 0 ? 10 : 0,
-              }}
-            >
-              {draft[key].map((value, idx) => (
-                <span
-                  key={`${value}-${idx}`}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontFamily: "JetBrains Mono, monospace",
-                    fontSize: 12,
-                    background: "var(--bg-input)",
-                    border: "1px solid var(--border)",
-                    color: "var(--text-primary)",
-                    padding: "3px 8px",
-                    clipPath: clipCorner(4),
-                  }}
-                >
-                  {value}
-                  <span
-                    onClick={() => removeTag(key, idx)}
-                    style={{
-                      cursor: "pointer",
-                      color: "var(--text-dim)",
-                      fontFamily: "sans-serif",
-                      fontSize: 14,
-                      lineHeight: 1,
-                      marginLeft: 2,
-                    }}
-                    onMouseEnter={(e) =>
-                      (e.currentTarget.style.color = "var(--amber)")
-                    }
-                    onMouseLeave={(e) =>
-                      (e.currentTarget.style.color = "var(--text-dim)")
-                    }
-                  >
-                    ×
-                  </span>
-                </span>
-              ))}
-            </div>
-
-            {/* Input */}
-            <input
-              type="text"
-              placeholder={`Add ${label.toLowerCase()}... (press Enter)`}
-              value={inputValues[key]}
-              onChange={(e) =>
-                setInputValues((prev) => ({ ...prev, [key]: e.target.value }))
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addTag(key, inputValues[key]);
-                  setInputValues((prev) => ({ ...prev, [key]: "" }));
-                }
-              }}
-              style={{
-                fontFamily: "JetBrains Mono, monospace",
-                fontSize: 13,
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                padding: "6px 10px",
-                borderRadius: 0,
-                clipPath: clipCorner(6),
-                outline: "none",
-                width: "100%",
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
-        ))}
-      </div>
-
-      {/* ── Save / Reload ── */}
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          marginTop: 20,
-          justifyContent: "flex-end",
-          alignItems: "center",
-        }}
-      >
-        {saveStatus === "saved" && (
-          <span
-            style={{
-              fontFamily: "Outfit, sans-serif",
-              fontSize: 12,
-              color: "var(--amber)",
-            }}
-          >
-            Changes saved
-          </span>
-        )}
-        {saveStatus === "error" && (
-          <span
-            style={{
-              fontFamily: "Outfit, sans-serif",
-              fontSize: 12,
-              color: "#f44",
-            }}
-          >
-            Save failed
-          </span>
-        )}
-        <button
-          onClick={load}
-          style={{
-            fontFamily: "JetBrains Mono, monospace",
-            fontSize: 12,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: 1,
-            padding: "8px 20px",
-            background: "transparent",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-            cursor: "pointer",
-            clipPath: clipCorner(6),
-          }}
-        >
-          Reload
-        </button>
-        <button
-          onClick={handleSave}
-          disabled={!dirty || saveStatus === "saving"}
-          style={{
-            fontFamily: "JetBrains Mono, monospace",
-            fontSize: 12,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: 1,
-            padding: "8px 20px",
-            background: dirty ? "var(--amber)" : "var(--bg-input)",
-            border: `1px solid ${dirty ? "var(--amber)" : "var(--border)"}`,
-            color: dirty ? "#000" : "var(--text-dim)",
-            cursor: dirty ? "pointer" : "default",
-            clipPath: clipCorner(6),
-            opacity: saveStatus === "saving" ? 0.6 : 1,
-          }}
-        >
-          {saveStatus === "saving" ? "Saving..." : "Save Changes"}
-        </button>
-      </div>
     </div>
   );
 }

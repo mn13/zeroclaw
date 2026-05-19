@@ -1,9 +1,0 @@
-# ─────────────────────────────────────────────────────────────
-# ZeroClaw Gateway Config — Local Host Mode
-# ─────────────────────────────────────────────────────────────
-# Used by `make local-gateway`. Adjust instances as needed.
-# Env vars are loaded from docker/.env or .env automatically.
-
-listen_addr = "0.0.0.0:8080"
-
-[instances]

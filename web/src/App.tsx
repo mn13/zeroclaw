@@ -1,179 +1,269 @@
-import { useState, useCallback, useEffect, useRef } from "react";
-import { Sidebar } from "./components/Sidebar";
-import { Header } from "./components/Header";
-import { Toast } from "./components/Toast";
-import { Login } from "./pages/Login";
-import { Chat } from "./pages/Chat";
-import Config from "./pages/Config";
-import Memory from "./pages/Memory";
-import Tools from "./pages/Tools";
-import Status from "./pages/Status";
-import Admin from "./pages/Admin";
-import Identity from "./pages/Identity";
-import Connectors from "./pages/Connectors";
-import Integrations from "./pages/Integrations";
-import Cron from "./pages/Cron";
-import { useToast } from "./hooks/useToast";
-import { getToken, setToken, restoreToken, listInstances } from "./api";
-import type { InstanceInfo } from "./api";
+import { Component, createContext, useContext, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ThemeProvider } from './contexts/ThemeContext';
 
-export type View = "chat" | "config" | "memory" | "tools" | "identity" | "connectors" | "integrations" | "cron" | "status" | "admin";
+import { loadLocale, saveLocale } from './contexts/ThemeContext';
+import { AuthProvider, useAuth } from './hooks/useAuth';
+import { DraftContext, useDraftStore } from './hooks/useDraft';
+import { getAdminPairCode, getOnboardStatus } from './lib/api';
+import { basePath } from './lib/basePath';
+import { setLocale, type Locale } from './lib/i18n';
+import { Router } from './router/router';
+import { AgentProvider } from './contexts/AgentContext';
 
-export function App() {
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [instances, setInstances] = useState<InstanceInfo[]>([]);
-  const [currentInstance, setCurrentInstance] = useState("");
-  const [view, setView] = useState<View>("chat");
-  const [sidebarExpanded, setSidebarExpanded] = useState(true);
-  const { toast, show: showToast } = useToast();
-  const autoLoginAttempted = useRef(false);
+// Locale context
+interface LocaleContextType {
+  locale: string;
+  setAppLocale: (locale: string) => void;
+}
 
-  // Auto-login from ?token= URL parameter or saved cookie
+export const LocaleContext = createContext<LocaleContextType>({
+  locale: 'en',
+  setAppLocale: () => { },
+});
+
+export const useLocaleContext = () => useContext(LocaleContext);
+
+// ---------------------------------------------------------------------------
+// Error boundary — catches render crashes and shows a recoverable message
+// instead of a black screen
+// ---------------------------------------------------------------------------
+
+interface ErrorBoundaryState {
+  error: Error | null;
+}
+
+export class ErrorBoundary extends Component<
+  { children: ReactNode },
+  ErrorBoundaryState
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[ZeroClaw] Render error:', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-6">
+          <div className="card p-6 w-full max-w-lg" style={{ borderColor: 'var(--color-status-error-alpha-30)' }}>
+            <h2 className="text-lg font-semibold mb-2" style={{ color: 'var(--color-status-error)' }}>
+              Something went wrong
+            </h2>
+            <p className="text-sm mb-4" style={{ color: 'var(--pc-text-muted)' }}>
+              A render error occurred. Check the browser console for details.
+            </p>
+            <pre className="text-xs rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all font-mono" style={{ background: 'var(--pc-bg-base)', color: 'var(--color-status-error)' }}>
+              {this.state.error.message}
+            </pre>
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="btn-electric mt-6 px-4 py-2 text-sm font-medium"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Pairing dialog component
+function PairingDialog({ onPair }: { onPair: (code: string) => Promise<void> }) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [displayCode, setDisplayCode] = useState<string | null>(null);
+  const [codeLoading, setCodeLoading] = useState(true);
+
+  // Fetch the current pairing code (public endpoint works in Docker too)
   useEffect(() => {
-    if (autoLoginAttempted.current || loggedIn) return;
-    autoLoginAttempted.current = true;
-
-    const params = new URLSearchParams(window.location.search);
-    const urlToken = params.get("token");
-    const savedToken = restoreToken();
-    const token = urlToken || savedToken;
-    if (!token) return;
-
-    setToken(token);
-    listInstances()
-      .then((insts) => {
-        setLoggedIn(true);
-        setInstances(insts);
-        if (insts.length > 0 && insts[0]) {
-          setCurrentInstance(insts[0].id);
-        }
-        // Clean the token from the URL
-        if (urlToken) {
-          const url = new URL(window.location.href);
-          url.searchParams.delete("token");
-          window.history.replaceState({}, "", url.toString());
+    let cancelled = false;
+    getAdminPairCode()
+      .then((data) => {
+        if (!cancelled && data.pairing_code) {
+          setDisplayCode(data.pairing_code);
+          setCode(data.pairing_code); // auto-fill so user just clicks "Pair"
         }
       })
       .catch(() => {
-        // Token invalid, fall back to manual login
-        setToken("");
+        // Endpoint not reachable — user must check terminal / docker logs
+      })
+      .finally(() => {
+        if (!cancelled) setCodeLoading(false);
       });
-  }, [loggedIn]);
-
-  const handleLogin = useCallback((insts: InstanceInfo[]) => {
-    setLoggedIn(true);
-    setInstances(insts);
-    if (insts.length > 0 && insts[0]) {
-      setCurrentInstance(insts[0].id);
-    }
+    return () => { cancelled = true; };
   }, []);
 
-  const handleLogout = useCallback(() => {
-    setToken("");
-    setLoggedIn(false);
-    setInstances([]);
-    setCurrentInstance("");
-  }, []);
-
-  const refreshInstances = useCallback(() => {
-    listInstances()
-      .then(setInstances)
-      .catch((err) => showToast(err instanceof Error ? err.message : "Failed to refresh instances", true));
-  }, [showToast]);
-
-  if (!loggedIn || !getToken()) {
-    return (
-      <div style={{ display: "flex", height: "100vh" }}>
-        <Sidebar
-          view={view}
-          onViewChange={setView}
-          expanded={sidebarExpanded}
-          onToggle={() => setSidebarExpanded((e) => !e)}
-          health="unknown"
-          instanceSelected={false}
-          instances={[]}
-          currentInstance=""
-          onInstanceChange={() => {}}
-        />
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
-          <Header view={view} />
-          <Login onLogin={handleLogin} />
-        </div>
-        <Toast toast={toast} />
-      </div>
-    );
-  }
-
-  const health = instances.find((i) => i.id === currentInstance)?.health ?? "unknown";
-
-  const renderView = () => {
-    switch (view) {
-      case "chat":
-        return <Chat instanceId={currentInstance} toast={showToast} />;
-      case "config":
-        return <Config instanceId={currentInstance} toast={showToast} />;
-      case "memory":
-        return <Memory instanceId={currentInstance} toast={showToast} />;
-      case "tools":
-        return <Tools instanceId={currentInstance} toast={showToast} />;
-      case "identity":
-        return <Identity instanceId={currentInstance} toast={showToast} />;
-      case "connectors":
-        return <Connectors instanceId={currentInstance} toast={showToast} />;
-      case "integrations":
-        return <Integrations toast={showToast} />;
-      case "cron":
-        return <Cron instanceId={currentInstance} toast={showToast} />;
-      case "status":
-        return (
-          <Status
-            instanceId={currentInstance}
-            toast={showToast}
-            onLogout={handleLogout}
-          />
-        );
-      case "admin":
-        return <Admin toast={showToast} instances={instances} onInstancesChange={refreshInstances} />;
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      await onPair(code);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Pairing failed');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div style={{ display: "flex", height: "100vh" }}>
-      <Sidebar
-        view={view}
-        onViewChange={setView}
-        expanded={sidebarExpanded}
-        onToggle={() => setSidebarExpanded((e) => !e)}
-        health={health}
-        instanceSelected={!!currentInstance}
-        instances={instances}
-        currentInstance={currentInstance}
-        onInstanceChange={setCurrentInstance}
-      />
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
-        <Header view={view} />
-        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {(currentInstance || view === "admin" || view === "integrations") ? (
-            renderView()
-          ) : (
-            <div
-              style={{
-                flex: 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "var(--text-dim)",
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: 12,
-                letterSpacing: 1,
-              }}
-            >
-              SELECT AN INSTANCE TO BEGIN
+    <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--pc-bg-base)' }}>
+      {/* Ambient glow */}
+      <div className="relative surface-panel p-8 w-full max-w-md animate-fade-in-scale">
+
+        <div className="text-center mb-8">
+          <img
+            src={`${basePath}/_app/zeroclaw-trans.png`}
+            alt="ZeroClaw"
+            className="h-20 w-20 rounded-2xl object-cover mx-auto mb-4 animate-float"
+            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+          />
+          <h1 className="text-2xl font-bold mb-2 text-gradient-blue">ZeroClaw</h1>
+          <p className="text-sm" style={{ color: 'var(--pc-text-muted)' }}>
+            {displayCode ? 'Your pairing code — click Pair to connect' : 'Enter the pairing code from your terminal'}
+          </p>
+        </div>
+
+        {/* Show the pairing code if available (localhost) */}
+        {!codeLoading && displayCode && (
+          <div className="mb-6 p-4 rounded-2xl text-center border" style={{ background: 'var(--pc-accent-glow)', borderColor: 'var(--pc-accent-dim)' }}>
+            <div className="text-4xl font-mono font-bold tracking-[0.4em] py-2" style={{ color: 'var(--pc-text-primary)' }}>
+              {displayCode}
             </div>
+            <p className="text-xs mt-2" style={{ color: 'var(--pc-text-muted)' }}>Enter this code below or on another device</p>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit}>
+          <input
+            type="text"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="6-digit code"
+            className="input-electric w-full px-4 py-4 text-center text-2xl tracking-[0.3em] font-medium mb-4"
+            maxLength={6}
+            autoFocus
+          />
+          {error && (
+            <p aria-live="polite" className="text-sm mb-4 text-center animate-fade-in" style={{ color: 'var(--color-status-error)' }}>{error}</p>
           )}
+          <button
+            type="submit"
+            disabled={loading || code.length < 6}
+            className="btn-electric w-full py-3.5 text-sm font-semibold tracking-wide"
+          >
+            {loading ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Pairing...
+              </span>
+            ) : 'Pair'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AppContent() {
+  const { isAuthenticated, requiresPairing, loading, pair, logout } = useAuth();
+  const [locale, setLocaleState] = useState(loadLocale());
+  const draftStore = useDraftStore();
+  setLocale(locale as Locale);
+
+  const setAppLocale = (newLocale: string) => {
+    setLocaleState(newLocale);
+    setLocale(newLocale as Locale);
+    saveLocale(newLocale);
+  };
+
+  // Listen for 401 events to force logout
+  useEffect(() => {
+    window.addEventListener('zeroclaw-unauthorized', logout);
+    return () => window.removeEventListener('zeroclaw-unauthorized', logout);
+  }, [logout]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--pc-bg-base)' }}>
+        <div className="flex flex-col items-center gap-4 animate-fade-in">
+          <div className="h-10 w-10 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--pc-border)', borderTopColor: 'var(--pc-accent)' }} />
+          <p className="text-sm" style={{ color: 'var(--pc-text-muted)' }}>Connecting...</p>
         </div>
       </div>
-      <Toast toast={toast} />
-    </div>
+    );
+  }
+
+  if (!isAuthenticated && requiresPairing) {
+    return <PairingDialog onPair={pair} />;
+  }
+
+  return (
+    <AgentProvider>
+      <DraftContext.Provider value={draftStore}>
+        <LocaleContext.Provider value={{ locale, setAppLocale }}>
+          <FreshInstallRedirect />
+          <Router />
+        </LocaleContext.Provider>
+      </DraftContext.Provider>
+    </AgentProvider>
+  );
+}
+
+// Redirects fresh installs (no completed onboarding sections, no provider
+// configured) from the default `/` landing to `/onboard`. The daemon
+// always writes a default config.toml on init, so file existence isn't
+// the right signal — we ask the gateway via /api/onboard/status which
+// inspects the in-memory config for explicit user-driven markers
+// (`onboard_state.completed_sections`, `providers.fallback`,
+// `providers.models`).
+//
+// Fires once per session. Only redirects when the user lands at `/` —
+// manual navigation to other routes is left alone, so the user can
+// always escape into the existing config editor or chat surfaces if
+// they want.
+function FreshInstallRedirect() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    if (checked) return;
+    setChecked(true);
+    if (location.pathname !== '/') return;
+    void getOnboardStatus()
+      .then((status) => {
+        if (status.needs_onboarding) {
+          navigate('/onboard', { replace: true });
+        }
+      })
+      .catch(() => {
+        // Status check failed (network blip, gateway hiccup); the
+        // dashboard renders normally as the safe default.
+      });
+  }, [checked, location.pathname, navigate]);
+
+  return null;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ThemeProvider>
+        <AppContent />
+      </ThemeProvider>
+    </AuthProvider>
   );
 }

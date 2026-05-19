@@ -31,45 +31,79 @@
     clippy::unnecessary_map_or,
     clippy::unused_self,
     clippy::cast_precision_loss,
-    clippy::unnecessary_wraps,
-    dead_code
+    clippy::unnecessary_wraps
 )]
 
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "agent-runtime")]
 pub mod agent;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod approval;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod auth;
+#[cfg(feature = "agent-runtime")]
 pub mod channels;
+pub mod commands;
 pub mod config;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod cost;
+#[cfg(feature = "agent-runtime")]
 pub mod cron;
-pub mod daemon;
+#[cfg(feature = "agent-runtime")]
+pub(crate) mod daemon;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod doctor;
+#[cfg(feature = "gateway")]
 pub mod gateway;
+#[cfg(feature = "agent-runtime")]
+pub mod hands;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod hardware;
-pub mod health;
-pub mod heartbeat;
+#[cfg(feature = "agent-runtime")]
+pub(crate) mod health;
+#[cfg(feature = "agent-runtime")]
+pub(crate) mod heartbeat;
+#[cfg(feature = "agent-runtime")]
 pub mod hooks;
-pub(crate) mod identity;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod integrations;
 pub mod memory;
-pub(crate) mod migration;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod multimodal;
+#[cfg(feature = "agent-runtime")]
+pub mod nodes;
+#[cfg(feature = "agent-runtime")]
 pub mod observability;
-pub(crate) mod onboard;
+#[cfg(feature = "agent-runtime")]
 pub mod peripherals;
+#[cfg(feature = "agent-runtime")]
+pub mod platform;
 pub mod providers;
+#[cfg(feature = "agent-runtime")]
 pub mod rag;
-pub mod runtime;
-pub mod security;
-pub mod serve;
+#[cfg(feature = "agent-runtime")]
+pub mod routines;
+#[cfg(feature = "agent-runtime")]
+pub(crate) mod security;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod service;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod skills;
+#[cfg(feature = "agent-runtime")]
+pub mod sop;
+#[cfg(feature = "agent-runtime")]
 pub mod tools;
+#[cfg(feature = "agent-runtime")]
+pub(crate) mod trust;
+#[cfg(feature = "agent-runtime")]
 pub(crate) mod tunnel;
-pub(crate) mod util;
+#[cfg(feature = "agent-runtime")]
+pub mod verifiable_intent;
+
+#[cfg(feature = "plugins-wasm")]
+pub mod plugins;
 
 pub use config::Config;
 
@@ -154,6 +188,15 @@ pub enum ServiceCommands {
     Status,
     /// Uninstall daemon service unit
     Uninstall,
+    /// Tail daemon service logs
+    Logs {
+        /// Number of lines to show (default: 50)
+        #[arg(short = 'n', long, default_value = "50")]
+        lines: usize,
+        /// Follow log output (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
+    },
 }
 
 /// Channel management subcommands
@@ -250,6 +293,14 @@ pub enum SkillCommands {
         /// Skill name to remove
         name: String,
     },
+    /// Run TEST.sh validation for a skill (or all skills)
+    Test {
+        /// Skill name to test; omit for all skills
+        name: Option<String>,
+        /// Show verbose output
+        #[arg(long)]
+        verbose: bool,
+    },
 }
 
 /// Migration subcommands
@@ -281,15 +332,22 @@ Times are evaluated in UTC by default; use --tz with an IANA \
 timezone name to override.
 
 Examples:
-  zeroclaw cron add '0 9 * * 1-5' 'Good morning' --tz America/New_York
-  zeroclaw cron add '*/30 * * * *' 'Check system health'")]
+  zeroclaw cron add '0 9 * * 1-5' 'Good morning' --tz America/New_York --agent
+  zeroclaw cron add '*/30 * * * *' 'Check system health' --agent
+  zeroclaw cron add '*/5 * * * *' 'echo ok'")]
     Add {
         /// Cron expression
         expression: String,
         /// Optional IANA timezone (e.g. America/Los_Angeles)
         #[arg(long)]
         tz: Option<String>,
-        /// Command to run
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Restrict agent cron jobs to the specified tool names (repeatable, agent-only)
+        #[arg(long = "allowed-tool")]
+        allowed_tools: Vec<String>,
+        /// Command (shell) or prompt (agent) to run
         command: String,
     },
     /// Add a one-shot scheduled task at an RFC3339 timestamp
@@ -304,7 +362,13 @@ Examples:
     AddAt {
         /// One-shot timestamp in RFC3339 format
         at: String,
-        /// Command to run
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Restrict agent cron jobs to the specified tool names (repeatable, agent-only)
+        #[arg(long = "allowed-tool")]
+        allowed_tools: Vec<String>,
+        /// Command (shell) or prompt (agent) to run
         command: String,
     },
     /// Add a fixed-interval scheduled task
@@ -319,7 +383,13 @@ Examples:
     AddEvery {
         /// Interval in milliseconds
         every_ms: u64,
-        /// Command to run
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Restrict agent cron jobs to the specified tool names (repeatable, agent-only)
+        #[arg(long = "allowed-tool")]
+        allowed_tools: Vec<String>,
+        /// Command (shell) or prompt (agent) to run
         command: String,
     },
     /// Add a one-shot delayed task (e.g. "30m", "2h", "1d")
@@ -336,7 +406,13 @@ Examples:
     Once {
         /// Delay duration
         delay: String,
-        /// Command to run
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Restrict agent cron jobs to the specified tool names (repeatable, agent-only)
+        #[arg(long = "allowed-tool")]
+        allowed_tools: Vec<String>,
+        /// Command (shell) or prompt (agent) to run
         command: String,
     },
     /// Remove a scheduled task
@@ -351,9 +427,9 @@ Update one or more fields of an existing scheduled task.
 Only the fields you specify are changed; others remain unchanged.
 
 Examples:
-  zeroclaw cron update <task-id> --expression '0 8 * * *'
-  zeroclaw cron update <task-id> --tz Europe/London --name 'Morning check'
-  zeroclaw cron update <task-id> --command 'Updated message'")]
+  zeroclaw cron update TASK_ID --expression '0 8 * * *'
+  zeroclaw cron update TASK_ID --tz Europe/London --name 'Morning check'
+  zeroclaw cron update TASK_ID --command 'Updated message'")]
     Update {
         /// Task ID
         id: String,
@@ -369,6 +445,9 @@ Examples:
         /// New job name
         #[arg(long)]
         name: Option<String>,
+        /// Replace the agent job allowlist with the specified tool names (repeatable)
+        #[arg(long = "allowed-tool")]
+        allowed_tools: Vec<String>,
     },
     /// Pause a scheduled task
     Pause {
@@ -419,6 +498,13 @@ pub enum MemoryCommands {
         #[arg(long)]
         yes: bool,
     },
+    /// Rebuild backend indexes: FTS tables + any missing embedding vectors.
+    ///
+    /// Run after `zeroclaw migrate openclaw` or other bulk writes that
+    /// land rows with `embedding = NULL`. Safe to re-run; only touches
+    /// entries whose vector is missing. No-op for backends without a
+    /// vector index.
+    Reindex,
 }
 
 /// Integration subcommands
@@ -524,4 +610,21 @@ Examples:
     },
     /// Flash ZeroClaw firmware to Nucleo-F401RE (builds + probe-rs run)
     FlashNucleo,
+}
+
+/// SOP management subcommands
+#[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SopCommands {
+    /// List loaded SOPs
+    List,
+    /// Validate SOP definitions
+    Validate {
+        /// SOP name to validate (all if omitted)
+        name: Option<String>,
+    },
+    /// Show details of an SOP
+    Show {
+        /// Name of the SOP to show
+        name: String,
+    },
 }

@@ -1,75 +1,10 @@
-pub mod log;
-pub mod multi;
-pub mod noop;
-#[cfg(feature = "observability-otel")]
-pub mod otel;
-pub mod prometheus;
-pub mod runtime_trace;
-pub mod traits;
-pub mod verbose;
-
 #[allow(unused_imports)]
-pub use self::log::LogObserver;
-#[allow(unused_imports)]
-pub use self::multi::MultiObserver;
-pub use noop::NoopObserver;
-#[cfg(feature = "observability-otel")]
-pub use otel::OtelObserver;
-pub use prometheus::PrometheusObserver;
-pub use traits::{Observer, ObserverEvent};
-#[allow(unused_imports)]
-pub use verbose::VerboseObserver;
-
-use crate::config::ObservabilityConfig;
-
-/// Factory: create the right observer from config
-pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
-    match config.backend.as_str() {
-        "log" => Box::new(LogObserver::new()),
-        "prometheus" => Box::new(PrometheusObserver::new()),
-        "otel" | "opentelemetry" | "otlp" => {
-            #[cfg(feature = "observability-otel")]
-            match OtelObserver::new(
-                config.otel_endpoint.as_deref(),
-                config.otel_service_name.as_deref(),
-            ) {
-                Ok(obs) => {
-                    tracing::info!(
-                        endpoint = config
-                            .otel_endpoint
-                            .as_deref()
-                            .unwrap_or("http://localhost:4318"),
-                        "OpenTelemetry observer initialized"
-                    );
-                    Box::new(obs)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to create OTel observer: {e}. Falling back to noop.");
-                    Box::new(NoopObserver)
-                }
-            }
-            #[cfg(not(feature = "observability-otel"))]
-            {
-                tracing::warn!(
-                    "OpenTelemetry backend requested but this build was compiled without `observability-otel`; falling back to noop."
-                );
-                Box::new(NoopObserver)
-            }
-        }
-        "none" | "noop" => Box::new(NoopObserver),
-        _ => {
-            tracing::warn!(
-                "Unknown observability backend '{}', falling back to noop",
-                config.backend
-            );
-            Box::new(NoopObserver)
-        }
-    }
-}
+pub use zeroclaw_runtime::observability::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::*;
 
     #[test]
     fn factory_none_returns_noop() {
@@ -99,12 +34,26 @@ mod tests {
     }
 
     #[test]
+    fn factory_verbose_returns_verbose() {
+        let cfg = ObservabilityConfig {
+            backend: "verbose".into(),
+            ..ObservabilityConfig::default()
+        };
+        assert_eq!(create_observer(&cfg).name(), "verbose");
+    }
+
+    #[test]
     fn factory_prometheus_returns_prometheus() {
         let cfg = ObservabilityConfig {
             backend: "prometheus".into(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "prometheus");
+        let expected = if cfg!(feature = "observability-prometheus") {
+            "prometheus"
+        } else {
+            "noop"
+        };
+        assert_eq!(create_observer(&cfg).name(), expected);
     }
 
     #[test]

@@ -1,466 +1,305 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  listMemory,
-  searchMemory,
-  storeMemory,
-  forgetMemory,
-} from "../api";
-import type { MemoryEntry } from "../api";
-import { clipCorner } from "../theme";
+  Brain,
+  Search,
+  Plus,
+  Trash2,
+  X,
+  Filter,
+  MessageSquare,
+} from 'lucide-react';
+import type { MemoryEntry } from '@/types/api';
+import { getMemory, storeMemory, deleteMemory } from '@/lib/api';
+import { SESSION_ID_STORAGE_KEY } from '@/lib/ws';
+import { t } from '@/lib/i18n';
 
-interface Props {
-  instanceId: string;
-  toast: (msg: string, isError?: boolean) => void;
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + '...';
 }
 
-export default function Memory({ instanceId, toast }: Props) {
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString();
+}
+
+export default function Memory() {
+  const navigate = useNavigate();
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
-  const [selected, setSelected] = useState<MemoryEntry | null>(null);
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [showStore, setShowStore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  // Store form
-  const [formKey, setFormKey] = useState("");
-  const [formCategory, setFormCategory] = useState("");
-  const [formContent, setFormContent] = useState("");
+  // Recover the agent chat session this memory was captured in. The chat
+  // page reads `getOrCreateSessionId()` (backed by SESSION_ID_STORAGE_KEY)
+  // on mount and hydrates messages via `getSessionMessages(sid)`, so
+  // overwriting the key + navigating to /agent is enough to load the
+  // saved transcript. (#6145)
+  const handleOpenChat = (sessionId: string) => {
+    try {
+      localStorage.setItem(SESSION_ID_STORAGE_KEY, sessionId);
+    } catch {
+      // localStorage unavailable (e.g. private mode); fall through to
+      // navigation, which will create a fresh session.
+    }
+    navigate('/agent');
+  };
 
-  const fetchAll = useCallback(() => {
+  // Form state
+  const [formKey, setFormKey] = useState('');
+  const [formContent, setFormContent] = useState('');
+  const [formCategory, setFormCategory] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const fetchEntries = (q?: string, cat?: string) => {
     setLoading(true);
-    listMemory(instanceId)
-      .then((res) => {
-        setEntries(res.entries);
-        setSelected(null);
-      })
-      .catch((err) => toast(err.message, true))
-      .finally(() => setLoading(false));
-  }, [instanceId, toast]);
+    getMemory(q || undefined, cat || undefined)
+    .then(setEntries)
+    .catch((err) => setError(err.message))
+    .finally(() => setLoading(false));
+  };
 
   useEffect(() => {
-    fetchAll();
-  }, [fetchAll]);
+    fetchEntries();
+  }, []);
 
-  const handleSearch = useCallback(() => {
-    if (!query.trim()) {
-      fetchAll();
-      return;
-    }
-    setLoading(true);
-    searchMemory(instanceId, query.trim())
-      .then((res) => {
-        setEntries(res.entries);
-        setSelected(null);
-      })
-      .catch((err) => toast(err.message, true))
-      .finally(() => setLoading(false));
-  }, [instanceId, query, fetchAll, toast]);
+  const handleSearch = () => {
+    fetchEntries(search, categoryFilter);
+  };
 
-  const handleStore = useCallback(async () => {
-    if (!formKey.trim() || !formContent.trim()) {
-      toast("Key and content are required", true);
-      return;
-    }
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleSearch();
+  };
+  const categories = Array.from(new Set(entries.map((e) => e.category))).sort();
+
+  const handleAdd = async () => {
+    if (!formKey.trim() || !formContent.trim()) { setFormError(t('memory.validation_error')); return; }
+    setSubmitting(true);
+    setFormError(null);
     try {
       await storeMemory(
-        instanceId,
         formKey.trim(),
         formContent.trim(),
-        formCategory.trim() || "general",
+        formCategory.trim() || undefined,
       );
-      toast("Memory stored");
-      setShowStore(false);
-      setFormKey("");
-      setFormCategory("");
-      setFormContent("");
-      fetchAll();
+      fetchEntries(search, categoryFilter);
+      setShowForm(false);
+      setFormKey(''); setFormContent(''); setFormCategory('');
     } catch (err: unknown) {
-      toast(err instanceof Error ? err.message : "Store failed", true);
+      setFormError(err instanceof Error ? err.message : t('memory.store_error'));
+    } finally { setSubmitting(false); }
+  };
+
+  const handleDelete = async (key: string) => {
+    try {
+      await deleteMemory(key);
+      setEntries((prev) => prev.filter((e) => e.key !== key));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : t('memory.delete_error'));
+    } finally {
+      setConfirmDelete(null);
     }
-  }, [instanceId, formKey, formContent, formCategory, fetchAll, toast]);
-
-  const handleDelete = useCallback(
-    async (key: string) => {
-      try {
-        await forgetMemory(instanceId, key);
-        toast("Memory deleted");
-        setSelected(null);
-        fetchAll();
-      } catch (err: unknown) {
-        toast(err instanceof Error ? err.message : "Delete failed", true);
-      }
-    },
-    [instanceId, fetchAll, toast],
-  );
-
-  const handleCopy = useCallback(
-    (content: string) => {
-      navigator.clipboard.writeText(content).then(
-        () => toast("Copied to clipboard"),
-        () => toast("Copy failed", true),
-      );
-    },
-    [toast],
-  );
-
-  const inputStyle: React.CSSProperties = {
-    fontFamily: "JetBrains Mono, monospace",
-    fontSize: 13,
-    background: "var(--bg-input)",
-    border: "1px solid var(--border)",
-    color: "var(--text-primary)",
-    padding: "6px 10px",
-    clipPath: clipCorner(6),
-    outline: "none",
-    flex: 1,
   };
 
-  const btnSecondary: React.CSSProperties = {
-    fontFamily: "JetBrains Mono, monospace",
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    padding: "7px 16px",
-    background: "transparent",
-    border: "1px solid var(--border)",
-    color: "var(--text-primary)",
-    cursor: "pointer",
-    clipPath: clipCorner(6),
-  };
-
-  const btnPrimary: React.CSSProperties = {
-    ...btnSecondary,
-    background: "var(--amber)",
-    border: "1px solid var(--amber)",
-    color: "#000",
-  };
+  if (error && entries.length === 0) {
+    return (
+      <div className="p-6 animate-fade-in">
+        <div className="rounded-2xl border p-4" style={{ background: 'var(--color-status-error-alpha-08)', borderColor: 'var(--color-status-error-alpha-20)', color: 'var(--color-status-error)' }}>
+          {t('memory.load_error')}: {error}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: 24, maxWidth: 1000, flex: 1, overflowY: "auto" }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 20 }}>
-        <h2
-          style={{
-            fontFamily: "Syne, sans-serif",
-            fontSize: 18,
-            fontWeight: 700,
-            color: "var(--amber)",
-            textTransform: "uppercase",
-            letterSpacing: 1,
-          }}
-        >
-          Memory
-        </h2>
-        <span
-          style={{
-            fontFamily: "JetBrains Mono, monospace",
-            fontSize: 11,
-            color: "var(--text-dim)",
-          }}
-        >
-          {entries.length} {entries.length === 1 ? "entry" : "entries"}
-        </span>
-      </div>
-
-      {/* Toolbar */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        <input
-          type="text"
-          placeholder="Search memory..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          style={inputStyle}
-        />
-        <button onClick={handleSearch} style={btnSecondary}>
-          Search
-        </button>
-        <button onClick={fetchAll} style={btnSecondary}>
-          List All
-        </button>
-        <button
-          onClick={() => setShowStore(!showStore)}
-          style={btnPrimary}
-        >
-          + Store
+    <div className="flex flex-col h-full p-6 gap-6 animate-fade-in overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Brain className="h-5 w-5" style={{ color: 'var(--pc-accent)' }} />
+          <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--pc-text-primary)' }}>
+            {t('memory.memory_title')} ({entries.length})
+          </h2>
+        </div>
+        <button onClick={() => setShowForm(true)} className="btn-electric flex items-center gap-2 text-sm px-4 py-2">
+          <Plus className="h-4 w-4" />{t('memory.add_memory')}
         </button>
       </div>
 
-      {/* Store form */}
-      {showStore && (
-        <div
-          style={{
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-            clipPath: clipCorner(10),
-            padding: 16,
-            marginBottom: 16,
-          }}
-        >
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <input
-              type="text"
-              placeholder="Key"
-              value={formKey}
-              onChange={(e) => setFormKey(e.target.value)}
-              style={inputStyle}
-            />
-            <input
-              type="text"
-              placeholder="Category"
-              value={formCategory}
-              onChange={(e) => setFormCategory(e.target.value)}
-              style={{ ...inputStyle, maxWidth: 200 }}
-            />
-          </div>
-          <textarea
-            placeholder="Content..."
-            value={formContent}
-            onChange={(e) => setFormContent(e.target.value)}
-            rows={4}
-            style={{
-              ...inputStyle,
-              width: "100%",
-              resize: "vertical",
-              marginBottom: 8,
-              flex: "unset",
-            }}
-          />
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button
-              onClick={() => {
-                setShowStore(false);
-                setFormKey("");
-                setFormCategory("");
-                setFormContent("");
-              }}
-              style={btnSecondary}
-            >
-              Cancel
-            </button>
-            <button onClick={handleStore} style={btnPrimary}>
-              Store
-            </button>
+      {/* Search and Filter */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: 'var(--pc-text-faint)' }} />
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={handleKeyDown} placeholder={t('memory.search_placeholder')} className="input-electric w-full pl-10 pr-4 py-2.5 text-sm" />
+        </div>
+        <div className="relative">
+          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: 'var(--pc-text-faint)' }} />
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="input-electric pl-10 pr-8 py-2.5 text-sm appearance-none cursor-pointer">
+            <option value="">{t('memory.all_categories')}</option>
+            {categories.map((cat) => (
+              <option key={cat} value={cat}>
+                {cat}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button onClick={handleSearch} className="btn-electric px-4 py-2.5 text-sm">{t('memory.search_button')}</button>
+      </div>
+
+      {/* Error banner (non-fatal) */}
+      {error && (
+        <div className="rounded-xl border p-3 text-sm animate-fade-in" style={{ background: 'var(--color-status-error-alpha-08)', borderColor: 'var(--color-status-error-alpha-20)', color: 'var(--color-status-error)' }}>
+          {error}
+        </div>
+      )}
+
+      {/* Add Memory Form Modal */}
+      {showForm && (
+        <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50">
+          <div className="surface-panel p-6 w-full max-w-md mx-4 animate-fade-in-scale">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold" style={{ color: 'var(--pc-text-primary)' }}>{t('memory.add_modal_title')}</h3>
+              <button
+                onClick={() => {
+                  setShowForm(false);
+                  setFormError(null);
+                }}
+                className="btn-icon">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            {formError && (
+              <div className="mb-4 rounded-xl border p-3 text-sm animate-fade-in" style={{ background: 'var(--color-status-error-alpha-08)', borderColor: 'var(--color-status-error-alpha-20)', color: 'var(--color-status-error)' }}>
+                {formError}
+              </div>
+            )}
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 uppercase tracking-wider" style={{ color: 'var(--pc-text-secondary)' }}>
+                  {t('memory.key_required')} <span style={{ color: 'var(--color-status-error)' }}>*</span>
+                </label>
+                <input type="text" value={formKey} onChange={(e) => setFormKey(e.target.value)} placeholder="e.g. user_preferences" className="input-electric w-full px-3 py-2.5 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 uppercase tracking-wider" style={{ color: 'var(--pc-text-secondary)' }}>
+                  {t('memory.content_required')} <span style={{ color: 'var(--color-status-error)' }}>*</span>
+                </label>
+                <textarea value={formContent} onChange={(e) => setFormContent(e.target.value)} placeholder="Memory content..." rows={4} className="input-electric w-full px-3 py-2.5 text-sm resize-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 uppercase tracking-wider" style={{ color: 'var(--pc-text-secondary)' }}>
+                  {t('memory.category_optional')}
+                </label>
+                <input type="text" value={formCategory} onChange={(e) => setFormCategory(e.target.value)} placeholder="e.g. preferences, context, facts" className="input-electric w-full px-3 py-2.5 text-sm" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowForm(false);
+                  setFormError(null);
+                }}
+                className="btn-secondary px-4 py-2 text-sm font-medium"
+              >
+                {t('memory.cancel')}
+              </button>
+              <button
+                onClick={handleAdd} disabled={submitting} className="btn-electric px-4 py-2 text-sm font-medium">{submitting ? t('memory.saving') : t('common.save')}</button>
+            </div>
           </div>
         </div>
       )}
 
-      {loading && (
-        <div
-          style={{
-            color: "var(--text-dim)",
-            fontFamily: "Outfit, sans-serif",
-            fontSize: 14,
-            padding: 16,
-          }}
-        >
-          Loading...
+      {/* Memory Table */}
+      {loading ? (
+        <div className="flex items-center justify-center h-32">
+          <div className="h-8 w-8 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--pc-border)', borderTopColor: 'var(--pc-accent)' }} />
+        </div>
+      ) : entries.length === 0 ? (
+        <div className="card p-8 text-center">
+          <Brain className="h-10 w-10 mx-auto mb-3" style={{ color: 'var(--pc-text-faint)' }} />
+          <p style={{ color: 'var(--pc-text-muted)' }}>{t('memory.empty')}</p>
+        </div>
+      ) : (
+        <div className="card overflow-x-auto rounded-2xl">
+          <table className="table-electric">
+            <thead>
+              <tr>
+                <th>{t('memory.key')}</th>
+                <th>{t('memory.content')}</th>
+                <th>{t('memory.category')}</th>
+                <th>{t('memory.timestamp')}</th>
+                <th className="text-right">{t('common.actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => (
+                <tr key={entry.id}>
+                  <td className="font-mono text-xs" style={{ color: 'var(--pc-text-primary)' }}>
+                    {entry.key}
+                  </td>
+                  <td className="max-w-[300px] text-sm" style={{ color: 'var(--pc-text-secondary)' }}>
+                    <span title={entry.content}>
+                      {truncate(entry.content, 80)}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-semibold capitalize border" style={{ borderColor: 'var(--pc-border)', color: 'var(--pc-text-secondary)', background: 'var(--pc-accent-glow)' }}>
+                      {entry.category}
+                    </span>
+                  </td>
+                  <td className="text-xs whitespace-nowrap" style={{ color: 'var(--pc-text-muted)' }}>
+                    {formatDate(entry.timestamp)}
+                  </td>
+                  <td className="text-right">
+                    {confirmDelete === entry.key ? (
+                      <div className="flex items-center justify-end gap-2 animate-fade-in">
+                        <span className="text-xs" style={{ color: 'var(--color-status-error)' }}>
+                          {t('memory.delete_confirm')}
+                        </span>
+                        <button
+                          onClick={() => handleDelete(entry.key)}
+                          className="text-xs font-medium" style={{ color: 'var(--color-status-error)' }}
+                        >
+                          {t('memory.yes')}
+                        </button>
+                        <button
+                          onClick={() => setConfirmDelete(null)}
+                          className="text-xs font-medium" style={{ color: 'var(--pc-text-muted)' }}>
+                          {t('memory.no')}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1">
+                        {entry.session_id && (
+                          <button
+                            onClick={() => handleOpenChat(entry.session_id!)}
+                            className="btn-icon"
+                            title={`Open chat session ${entry.session_id.slice(0, 8)}…`}
+                          >
+                            <MessageSquare className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setConfirmDelete(entry.key)}
+                          className="btn-icon"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-
-      {/* Memory list + detail */}
-      <div style={{ display: "flex", gap: 16 }}>
-        {/* List */}
-        <div
-          style={{
-            flex: 1,
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-            clipPath: clipCorner(10),
-            overflow: "hidden",
-          }}
-        >
-          {entries.length === 0 && !loading && (
-            <div
-              style={{
-                padding: 32,
-                textAlign: "center",
-                color: "var(--text-dim)",
-                fontFamily: "Outfit, sans-serif",
-                fontSize: 13,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 28,
-                  fontFamily: "JetBrains Mono, monospace",
-                  marginBottom: 8,
-                  opacity: 0.4,
-                }}
-              >
-                {"◇"}
-              </div>
-              No memory entries found
-              <div style={{ fontSize: 11, marginTop: 4, color: "var(--text-dim)" }}>
-                Use "+ Store" to add entries or chat with the agent to build memory
-              </div>
-            </div>
-          )}
-          {entries.map((entry) => {
-            const isSelected = selected?.key === entry.key;
-            return (
-              <div
-                key={entry.key}
-                onClick={() => setSelected(isSelected ? null : entry)}
-                style={{
-                  padding: "10px 14px",
-                  borderBottom: "1px solid var(--border)",
-                  cursor: "pointer",
-                  borderLeft: isSelected
-                    ? "3px solid var(--amber)"
-                    : "3px solid transparent",
-                  background: isSelected
-                    ? "var(--amber-glow)"
-                    : "transparent",
-                  transition: "background 0.15s",
-                }}
-              >
-                <div
-                  style={{
-                    fontFamily: "JetBrains Mono, monospace",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "var(--amber-bright)",
-                    marginBottom: 2,
-                  }}
-                >
-                  {entry.key}
-                </div>
-                <div
-                  style={{
-                    fontFamily: "monospace",
-                    fontSize: 10,
-                    textTransform: "uppercase",
-                    color: "var(--text-dim)",
-                    marginBottom: 4,
-                  }}
-                >
-                  {entry.category}
-                </div>
-                <div
-                  style={{
-                    fontFamily: "Outfit, sans-serif",
-                    fontSize: 12,
-                    color: "var(--text-dim)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {entry.content}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Detail panel */}
-        {selected && (
-          <div
-            style={{
-              width: 360,
-              flexShrink: 0,
-              border: "1px solid var(--border-amber)",
-              clipPath: clipCorner(10),
-              padding: 16,
-              background: "var(--bg-card)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 12,
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: "JetBrains Mono, monospace",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: "var(--amber-bright)",
-                }}
-              >
-                {selected.key}
-              </span>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button
-                  onClick={() => handleCopy(selected.content)}
-                  style={{
-                    ...btnSecondary,
-                    padding: "4px 10px",
-                    fontSize: 10,
-                  }}
-                >
-                  Copy
-                </button>
-                <button
-                  onClick={() => handleDelete(selected.key)}
-                  style={{
-                    ...btnSecondary,
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    borderColor: "var(--error-text)",
-                    color: "var(--error-text)",
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-
-            <div
-              style={{
-                background: "var(--bg-input)",
-                fontFamily: "JetBrains Mono, monospace",
-                fontSize: 12,
-                color: "var(--text-primary)",
-                padding: 12,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                maxHeight: 300,
-                overflowY: "auto",
-                clipPath: clipCorner(6),
-                marginBottom: 12,
-              }}
-            >
-              {selected.content}
-            </div>
-
-            <div
-              style={{
-                fontFamily: "Outfit, sans-serif",
-                fontSize: 12,
-                color: "var(--text-dim)",
-                display: "flex",
-                flexDirection: "column",
-                gap: 4,
-              }}
-            >
-              <span>
-                Category:{" "}
-                <span style={{ color: "var(--text-primary)" }}>
-                  {selected.category}
-                </span>
-              </span>
-              <span>
-                Timestamp:{" "}
-                <span style={{ color: "var(--text-primary)" }}>
-                  {selected.timestamp}
-                </span>
-              </span>
-              {selected.score != null && (
-                <span>
-                  Score:{" "}
-                  <span style={{ color: "var(--amber)" }}>
-                    {selected.score.toFixed(4)}
-                  </span>
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }
