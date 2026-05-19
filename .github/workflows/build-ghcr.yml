@@ -16,6 +16,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The web dashboard's TypeScript client (web/src/lib/api-generated.ts)
+      # is generated from the gateway's in-process OpenAPI spec by
+      # `cargo xtask web gen-api`; it's gitignored, so npm run build inside
+      # Dockerfile.debian's web-builder stage fails with TS2307 unless we
+      # produce it here first. Mirrors upstream release-stable-manual.yml's
+      # dedicated "Build Web Dashboard" job.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Generate web API client
+        run: cargo run -p xtask --bin web -- gen-api
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
