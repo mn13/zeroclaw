@@ -13660,6 +13660,7 @@ dependencies = [
  "futures-util",
  "glob",
  "hex",
+ "infer",
  "nanohtml2text",
  "parking_lot",
  "pdf-extract",
