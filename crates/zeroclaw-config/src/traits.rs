@@ -188,6 +188,185 @@ pub struct IntegrationDescriptor {
     pub active: bool,
 }
 
+/// Per-field secret operations the `Configurable` derive emits for every
+/// `#[secret]` field. Generalizes encrypt / decrypt / is_set across the
+/// supported shapes — `String`, `Option<String>`, `Vec<String>`,
+/// `HashMap<String, String>`, and `Option<HashMap<String, String>>` — so
+/// adding a new shape is a single trait impl rather than another branch
+/// in the macro.
+///
+/// `encrypt_in_place` and `decrypt_in_place` are idempotent: encrypting an
+/// already-`enc2:`-prefixed value or decrypting a plaintext value is a no-op,
+/// detected via [`crate::security::SecretStore::is_encrypted`]. The `field`
+/// argument is the dotted config-path (e.g. `mcp.servers`); the impls suffix
+/// per-element coordinates (`[<idx>]` for `Vec`, `.<key>` for `HashMap`) so
+/// error messages point at the exact failed entry.
+pub trait SecretField {
+    /// Encrypt every non-empty, not-already-encrypted inner string.
+    fn encrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()>;
+
+    /// Inverse of [`Self::encrypt_in_place`].
+    fn decrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()>;
+
+    /// Whether the field carries at least one non-empty inner string. Reported
+    /// back through [`SecretFieldInfo::is_set`].
+    fn is_set(&self) -> bool;
+}
+
+impl SecretField for String {
+    fn encrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        if !self.is_empty() && !crate::security::SecretStore::is_encrypted(self) {
+            *self = store
+                .encrypt(self)
+                .with_context(|| format!("Failed to encrypt {field}"))?;
+        }
+        Ok(())
+    }
+
+    fn decrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        if crate::security::SecretStore::is_encrypted(self) {
+            *self = store
+                .decrypt(self)
+                .with_context(|| format!("Failed to decrypt {field}"))?;
+        }
+        Ok(())
+    }
+
+    fn is_set(&self) -> bool {
+        !self.is_empty()
+    }
+}
+
+impl SecretField for Option<String> {
+    fn encrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        match self {
+            Some(inner) => inner.encrypt_in_place(store, field),
+            None => Ok(()),
+        }
+    }
+
+    fn decrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        match self {
+            Some(inner) => inner.decrypt_in_place(store, field),
+            None => Ok(()),
+        }
+    }
+
+    fn is_set(&self) -> bool {
+        self.as_ref().is_some_and(|v| !v.is_empty())
+    }
+}
+
+impl SecretField for Vec<String> {
+    fn encrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        for (idx, element) in self.iter_mut().enumerate() {
+            element.encrypt_in_place(store, &format!("{field}[{idx}]"))?;
+        }
+        Ok(())
+    }
+
+    fn decrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        for (idx, element) in self.iter_mut().enumerate() {
+            element.decrypt_in_place(store, &format!("{field}[{idx}]"))?;
+        }
+        Ok(())
+    }
+
+    fn is_set(&self) -> bool {
+        !self.is_empty()
+    }
+}
+
+impl SecretField for std::collections::HashMap<String, String> {
+    fn encrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        for (key, value) in self.iter_mut() {
+            value.encrypt_in_place(store, &format!("{field}.{key}"))?;
+        }
+        Ok(())
+    }
+
+    fn decrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        for (key, value) in self.iter_mut() {
+            value.decrypt_in_place(store, &format!("{field}.{key}"))?;
+        }
+        Ok(())
+    }
+
+    fn is_set(&self) -> bool {
+        !self.is_empty()
+    }
+}
+
+impl SecretField for Option<std::collections::HashMap<String, String>> {
+    fn encrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        match self {
+            Some(inner) => inner.encrypt_in_place(store, field),
+            None => Ok(()),
+        }
+    }
+
+    fn decrypt_in_place(
+        &mut self,
+        store: &crate::security::SecretStore,
+        field: &str,
+    ) -> anyhow::Result<()> {
+        match self {
+            Some(inner) => inner.decrypt_in_place(store, field),
+            None => Ok(()),
+        }
+    }
+
+    fn is_set(&self) -> bool {
+        self.as_ref().is_some_and(|m| !m.is_empty())
+    }
+}
+
 /// The trait for describing a channel
 pub trait ChannelConfig {
     /// human-readable name
@@ -286,4 +465,146 @@ pub trait OnboardUi: Send {
     fn note(&mut self, msg: &str);
     fn status(&mut self, msg: &str);
     fn warn(&mut self, msg: &str);
+}
+
+#[cfg(test)]
+mod secret_field_tests {
+    use super::SecretField;
+    use crate::security::SecretStore;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn store() -> (TempDir, SecretStore) {
+        let tmp = TempDir::new().unwrap();
+        let store = SecretStore::new(tmp.path(), true);
+        (tmp, store)
+    }
+
+    #[test]
+    fn string_roundtrip_and_idempotent() {
+        let (_tmp, store) = store();
+        let mut s = String::from("sk-abc");
+        s.encrypt_in_place(&store, "test.s").unwrap();
+        assert!(SecretStore::is_encrypted(&s));
+        let enc1 = s.clone();
+        // idempotent: encrypting again must not double-wrap
+        s.encrypt_in_place(&store, "test.s").unwrap();
+        assert_eq!(s, enc1);
+        s.decrypt_in_place(&store, "test.s").unwrap();
+        assert_eq!(s, "sk-abc");
+    }
+
+    #[test]
+    fn string_empty_stays_empty() {
+        let (_tmp, store) = store();
+        let mut s = String::new();
+        s.encrypt_in_place(&store, "test.s").unwrap();
+        assert_eq!(s, "");
+        assert!(!s.is_set());
+    }
+
+    #[test]
+    fn option_string_none_is_noop() {
+        let (_tmp, store) = store();
+        let mut v: Option<String> = None;
+        v.encrypt_in_place(&store, "test.o").unwrap();
+        v.decrypt_in_place(&store, "test.o").unwrap();
+        assert_eq!(v, None);
+        assert!(!v.is_set());
+    }
+
+    #[test]
+    fn option_string_some_roundtrip() {
+        let (_tmp, store) = store();
+        let mut v: Option<String> = Some("Bearer xyz".into());
+        v.encrypt_in_place(&store, "test.o").unwrap();
+        assert!(SecretStore::is_encrypted(v.as_ref().unwrap()));
+        v.decrypt_in_place(&store, "test.o").unwrap();
+        assert_eq!(v.as_deref(), Some("Bearer xyz"));
+        assert!(v.is_set());
+    }
+
+    #[test]
+    fn vec_string_roundtrip_per_element() {
+        let (_tmp, store) = store();
+        let mut v: Vec<String> = vec!["one".into(), "".into(), "two".into()];
+        v.encrypt_in_place(&store, "test.v").unwrap();
+        assert!(SecretStore::is_encrypted(&v[0]));
+        assert_eq!(v[1], "", "empty element must stay empty");
+        assert!(SecretStore::is_encrypted(&v[2]));
+        v.decrypt_in_place(&store, "test.v").unwrap();
+        assert_eq!(v, vec!["one", "", "two"]);
+    }
+
+    #[test]
+    fn hashmap_string_string_roundtrip_per_value() {
+        let (_tmp, store) = store();
+        let mut h: HashMap<String, String> = HashMap::from([
+            ("Authorization".into(), "Bearer sk-abc".into()),
+            ("X-Trace".into(), "req-123".into()),
+        ]);
+        h.encrypt_in_place(&store, "mcp.servers.foo.headers")
+            .unwrap();
+        for v in h.values() {
+            assert!(SecretStore::is_encrypted(v));
+        }
+        h.decrypt_in_place(&store, "mcp.servers.foo.headers")
+            .unwrap();
+        assert_eq!(
+            h.get("Authorization").map(String::as_str),
+            Some("Bearer sk-abc")
+        );
+        assert_eq!(h.get("X-Trace").map(String::as_str), Some("req-123"));
+        assert!(h.is_set());
+    }
+
+    #[test]
+    fn option_hashmap_none_is_noop() {
+        let (_tmp, store) = store();
+        let mut v: Option<HashMap<String, String>> = None;
+        v.encrypt_in_place(&store, "test.oh").unwrap();
+        v.decrypt_in_place(&store, "test.oh").unwrap();
+        assert!(v.is_none());
+        assert!(!v.is_set());
+    }
+
+    #[test]
+    fn option_hashmap_some_roundtrip() {
+        let (_tmp, store) = store();
+        let mut v: Option<HashMap<String, String>> =
+            Some(HashMap::from([("k".into(), "secret".into())]));
+        v.encrypt_in_place(&store, "test.oh").unwrap();
+        assert!(SecretStore::is_encrypted(
+            v.as_ref().unwrap().get("k").unwrap()
+        ));
+        v.decrypt_in_place(&store, "test.oh").unwrap();
+        assert_eq!(
+            v.as_ref().unwrap().get("k").map(String::as_str),
+            Some("secret")
+        );
+        assert!(v.is_set());
+    }
+
+    #[test]
+    fn hashmap_empty_is_not_set() {
+        let h: HashMap<String, String> = HashMap::new();
+        assert!(!h.is_set());
+        let oh: Option<HashMap<String, String>> = Some(HashMap::new());
+        assert!(!oh.is_set());
+    }
+
+    #[test]
+    fn encrypt_decrypt_failure_message_includes_field_path() {
+        let tmp = TempDir::new().unwrap();
+        let bad_store = SecretStore::new(tmp.path(), true);
+        let mut s = String::from("enc2:not-valid-hex");
+        let err = s
+            .decrypt_in_place(&bad_store, "mcp.servers.foo.headers.Authorization")
+            .expect_err("malformed ciphertext must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mcp.servers.foo.headers.Authorization"),
+            "error must include field path; got: {msg}"
+        );
+    }
 }
